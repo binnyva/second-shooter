@@ -7,24 +7,60 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
+    "scheme": "secondshooter",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.secondshooter.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app needs camera access to capture photos and videos",
+        "NSMicrophoneUsageDescription": "This app needs microphone access to record videos with audio",
+        "NSPhotoLibraryUsageDescription": "This app saves photos and videos to your photo library",
+        "NSPhotoLibraryAddUsageDescription": "This app saves photos and videos to your photo library"
+      }
     },
     "android": {
+      "package": "com.secondshooter.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO"
+      ]
     },
     "web": {
-      "favicon": "./assets/favicon.png"
-    }
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "$(PRODUCT_NAME) needs access to your camera to capture photos and videos",
+          "enableMicrophonePermission": true,
+          "microphonePermissionText": "$(PRODUCT_NAME) needs access to your microphone to record videos with audio"
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "$(PRODUCT_NAME) saves photos and videos to your photo library",
+          "savePhotosPermission": "$(PRODUCT_NAME) saves photos and videos to your photo library"
+        }
+      ],
+      "expo-router"
+    ]
   }
 }

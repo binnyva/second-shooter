@@ -1,0 +1,374 @@
+import {
+  RTCPeerConnection,
+  RTCSessionDescription,
+  RTCIceCandidate,
+  MediaStream,
+  mediaDevices,
+  MediaStreamTrack,
+} from 'react-native-webrtc';
+import { RTC_CONFIG, DATA_CHANNEL_CONFIG, COMMAND_CHANNEL_NAME } from '../config/webrtc';
+import { Command, Response, IceCandidate, ConnectionState } from '../types';
+
+type CommandCallback = (command: Command) => void;
+type ResponseCallback = (response: Response) => void;
+type StreamCallback = (stream: MediaStream) => void;
+type StateCallback = (state: ConnectionState) => void;
+type IceCandidateEmitCallback = (candidate: IceCandidate) => void;
+
+// Type definitions for react-native-webrtc events
+interface RTCPeerConnectionIceEvent {
+  candidate: RTCIceCandidate | null;
+}
+
+interface RTCTrackEvent {
+  streams: MediaStream[];
+  track: MediaStreamTrack;
+}
+
+interface RTCDataChannelEvent {
+  channel: any;
+}
+
+class WebRTCService {
+  private peerConnection: RTCPeerConnection | null = null;
+  private dataChannel: any = null;
+  private localStream: MediaStream | null = null;
+  private remoteStream: MediaStream | null = null;
+
+  private onCommandCallback: CommandCallback | null = null;
+  private onResponseCallback: ResponseCallback | null = null;
+  private onRemoteStreamCallback: StreamCallback | null = null;
+  private onConnectionStateCallback: StateCallback | null = null;
+  private onIceCandidateCallback: IceCandidateEmitCallback | null = null;
+
+  // Create peer connection
+  createPeerConnection(): RTCPeerConnection {
+    if (this.peerConnection) {
+      this.peerConnection.close();
+    }
+
+    this.peerConnection = new RTCPeerConnection(RTC_CONFIG as any);
+
+    // Handle ICE candidates
+    (this.peerConnection as any).onicecandidate = (event: RTCPeerConnectionIceEvent) => {
+      if (event.candidate && this.onIceCandidateCallback) {
+        this.onIceCandidateCallback({
+          candidate: event.candidate.candidate as string,
+          sdpMLineIndex: event.candidate.sdpMLineIndex as number,
+          sdpMid: event.candidate.sdpMid as string,
+        });
+      }
+    };
+
+    // Handle connection state changes
+    (this.peerConnection as any).onconnectionstatechange = () => {
+      if (this.onConnectionStateCallback && this.peerConnection) {
+        const state = this.mapConnectionState(
+          (this.peerConnection as any).connectionState
+        );
+        this.onConnectionStateCallback(state);
+      }
+    };
+
+    // Handle ICE connection state changes
+    (this.peerConnection as any).oniceconnectionstatechange = () => {
+      console.log(
+        'ICE connection state:',
+        this.peerConnection?.iceConnectionState
+      );
+    };
+
+    // Handle incoming tracks (remote stream)
+    (this.peerConnection as any).ontrack = (event: RTCTrackEvent) => {
+      if (event.streams && event.streams[0]) {
+        this.remoteStream = event.streams[0];
+        if (this.onRemoteStreamCallback) {
+          this.onRemoteStreamCallback(event.streams[0]);
+        }
+      }
+    };
+
+    // Handle incoming data channel
+    (this.peerConnection as any).ondatachannel = (event: RTCDataChannelEvent) => {
+      this.setupDataChannel(event.channel);
+    };
+
+    return this.peerConnection;
+  }
+
+  // Map WebRTC connection state to our state
+  private mapConnectionState(state: string): ConnectionState {
+    switch (state) {
+      case 'connected':
+        return 'connected';
+      case 'connecting':
+        return 'connecting';
+      case 'failed':
+      case 'closed':
+        return 'failed';
+      default:
+        return 'disconnected';
+    }
+  }
+
+  // Create data channel (called by the initiator/camera device)
+  createDataChannel(): any {
+    if (!this.peerConnection) {
+      console.error('Peer connection not initialized');
+      return null;
+    }
+
+    const channel = this.peerConnection.createDataChannel(
+      COMMAND_CHANNEL_NAME,
+      DATA_CHANNEL_CONFIG as any
+    );
+
+    this.setupDataChannel(channel);
+    return channel;
+  }
+
+  // Set up data channel event handlers
+  private setupDataChannel(channel: any): void {
+    this.dataChannel = channel;
+
+    channel.onopen = () => {
+      console.log('Data channel opened');
+    };
+
+    channel.onclose = () => {
+      console.log('Data channel closed');
+    };
+
+    channel.onmessage = (event: { data: string }) => {
+      try {
+        const message = JSON.parse(event.data);
+
+        // Check if it's a command or response
+        if (this.isCommand(message) && this.onCommandCallback) {
+          this.onCommandCallback(message);
+        } else if (this.isResponse(message) && this.onResponseCallback) {
+          this.onResponseCallback(message);
+        }
+      } catch (error) {
+        console.error('Error parsing data channel message:', error);
+      }
+    };
+
+    channel.onerror = (error: any) => {
+      console.error('Data channel error:', error);
+    };
+  }
+
+  // Type guards for messages
+  private isCommand(message: unknown): message is Command {
+    if (!message || typeof message !== 'object') return false;
+    const m = message as { type?: string };
+    return [
+      'TAKE_PHOTO',
+      'START_RECORDING',
+      'STOP_RECORDING',
+      'SET_ZOOM',
+      'SET_FLASH',
+      'SWITCH_CAMERA',
+      'GET_STATE',
+    ].includes(m.type || '');
+  }
+
+  private isResponse(message: unknown): message is Response {
+    if (!message || typeof message !== 'object') return false;
+    const m = message as { type?: string };
+    return [
+      'PHOTO_TAKEN',
+      'RECORDING_STARTED',
+      'RECORDING_STOPPED',
+      'STATE_UPDATE',
+      'ERROR',
+    ].includes(m.type || '');
+  }
+
+  // Create and return SDP offer
+  async createOffer(): Promise<RTCSessionDescriptionInit> {
+    if (!this.peerConnection) {
+      throw new Error('Peer connection not initialized');
+    }
+
+    const offer = await this.peerConnection.createOffer({
+      offerToReceiveAudio: true,
+      offerToReceiveVideo: true,
+    } as any);
+
+    await this.peerConnection.setLocalDescription(offer as any);
+    return offer as RTCSessionDescriptionInit;
+  }
+
+  // Create and return SDP answer
+  async createAnswer(): Promise<RTCSessionDescriptionInit> {
+    if (!this.peerConnection) {
+      throw new Error('Peer connection not initialized');
+    }
+
+    const answer = await this.peerConnection.createAnswer();
+    await this.peerConnection.setLocalDescription(answer as any);
+    return answer as RTCSessionDescriptionInit;
+  }
+
+  // Set remote description
+  async setRemoteDescription(
+    description: RTCSessionDescriptionInit
+  ): Promise<void> {
+    if (!this.peerConnection) {
+      throw new Error('Peer connection not initialized');
+    }
+
+    const rtcDescription = new RTCSessionDescription({
+      type: description.type as any,
+      sdp: description.sdp || '',
+    });
+    await this.peerConnection.setRemoteDescription(rtcDescription as any);
+  }
+
+  // Add ICE candidate
+  async addIceCandidate(candidate: IceCandidate): Promise<void> {
+    if (!this.peerConnection) {
+      throw new Error('Peer connection not initialized');
+    }
+
+    const rtcCandidate = new RTCIceCandidate({
+      candidate: candidate.candidate,
+      sdpMLineIndex: candidate.sdpMLineIndex,
+      sdpMid: candidate.sdpMid,
+    });
+
+    await this.peerConnection.addIceCandidate(rtcCandidate as any);
+  }
+
+  // Get local media stream for camera
+  async getLocalStream(facingMode: 'front' | 'back' = 'back'): Promise<MediaStream> {
+    const sourceInfos = await mediaDevices.enumerateDevices() as any[];
+
+    let videoSourceId: string | undefined;
+    for (const sourceInfo of sourceInfos) {
+      if (
+        sourceInfo.kind === 'videoinput' &&
+        sourceInfo.facing === (facingMode === 'front' ? 'front' : 'environment')
+      ) {
+        videoSourceId = sourceInfo.deviceId;
+        break;
+      }
+    }
+
+    const stream = await mediaDevices.getUserMedia({
+      audio: true,
+      video: {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 30 },
+        facingMode: facingMode === 'front' ? 'user' : 'environment',
+        ...(videoSourceId ? { deviceId: videoSourceId } : {}),
+      },
+    });
+
+    this.localStream = stream as MediaStream;
+    return this.localStream;
+  }
+
+  // Add local stream to peer connection
+  addLocalStream(stream: MediaStream): void {
+    if (!this.peerConnection) {
+      throw new Error('Peer connection not initialized');
+    }
+
+    stream.getTracks().forEach((track) => {
+      this.peerConnection!.addTrack(track, stream);
+    });
+  }
+
+  // Send command via data channel
+  sendCommand(command: Command): void {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+      console.error('Data channel not ready');
+      return;
+    }
+
+    this.dataChannel.send(JSON.stringify(command));
+  }
+
+  // Send response via data channel
+  sendResponse(response: Response): void {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+      console.error('Data channel not ready');
+      return;
+    }
+
+    this.dataChannel.send(JSON.stringify(response));
+  }
+
+  // Set callback for incoming commands
+  onCommand(callback: CommandCallback): void {
+    this.onCommandCallback = callback;
+  }
+
+  // Set callback for incoming responses
+  onResponse(callback: ResponseCallback): void {
+    this.onResponseCallback = callback;
+  }
+
+  // Set callback for remote stream
+  onRemoteStream(callback: StreamCallback): void {
+    this.onRemoteStreamCallback = callback;
+  }
+
+  // Set callback for connection state changes
+  onConnectionState(callback: StateCallback): void {
+    this.onConnectionStateCallback = callback;
+  }
+
+  // Set callback for ICE candidates
+  onIceCandidate(callback: IceCandidateEmitCallback): void {
+    this.onIceCandidateCallback = callback;
+  }
+
+  // Get remote stream
+  getRemoteStream(): MediaStream | null {
+    return this.remoteStream;
+  }
+
+  // Get local stream
+  getLocalStreamRef(): MediaStream | null {
+    return this.localStream;
+  }
+
+  // Check if data channel is ready
+  isDataChannelReady(): boolean {
+    return this.dataChannel?.readyState === 'open';
+  }
+
+  // Close connection and cleanup
+  close(): void {
+    if (this.dataChannel) {
+      this.dataChannel.close();
+      this.dataChannel = null;
+    }
+
+    if (this.localStream) {
+      this.localStream.getTracks().forEach((track) => track.stop());
+      this.localStream = null;
+    }
+
+    if (this.peerConnection) {
+      this.peerConnection.close();
+      this.peerConnection = null;
+    }
+
+    this.remoteStream = null;
+    this.onCommandCallback = null;
+    this.onResponseCallback = null;
+    this.onRemoteStreamCallback = null;
+    this.onConnectionStateCallback = null;
+    this.onIceCandidateCallback = null;
+  }
+}
+
+// Export singleton instance
+export const webRTCService = new WebRTCService();
+export default webRTCService;
