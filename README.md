@@ -133,6 +133,10 @@ npm run ios
 
 # Run on Android
 npm run android
+
+
+# Build APK for Android
+npx expo run:android --variant release
 ```
 
 ## Configuration

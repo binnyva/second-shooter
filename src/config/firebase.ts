@@ -1,14 +1,14 @@
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { getFirestore, Firestore } from 'firebase/firestore';
 
-// Your web app's Firebase configuration
+// Firebase configuration from environment variables
 const firebaseConfig = {
-  apiKey: "AIzaSyDB8ARUv9GUAueDF4EUfPmSIUg1c5j5Rxc",
-  authDomain: "secondshooter-269c7.firebaseapp.com",
-  projectId: "secondshooter-269c7",
-  storageBucket: "secondshooter-269c7.firebasestorage.app",
-  messagingSenderId: "827373055707",
-  appId: "1:827373055707:web:9611bf537c1b3052a366fe"
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
 };
 
 // Initialize Firebase (avoid duplicate initialization)
