@@ -1,5 +1,6 @@
 import * as MediaLibrary from 'expo-media-library';
 import { PhotoFile, VideoFile } from 'react-native-vision-camera';
+import { Linking, Platform } from 'react-native';
 
 class MediaService {
   // Save photo to gallery
@@ -72,6 +73,51 @@ class MediaService {
   async requestPermissions(): Promise<boolean> {
     const { status } = await MediaLibrary.requestPermissionsAsync();
     return status === 'granted';
+  }
+
+  // Get the most recent photo from the gallery
+  async getLastPhoto(): Promise<MediaLibrary.Asset | null> {
+    try {
+      const hasPermission = await this.checkPermissions();
+      if (!hasPermission) {
+        console.log('No permission to access media library');
+        return null;
+      }
+
+      const { assets } = await MediaLibrary.getAssetsAsync({
+        first: 1,
+        mediaType: MediaLibrary.MediaType.photo,
+        sortBy: [MediaLibrary.SortBy.creationTime],
+      });
+
+      return assets.length > 0 ? assets[0] : null;
+    } catch (error) {
+      console.error('Error getting last photo:', error);
+      return null;
+    }
+  }
+
+  // Open the device's gallery/photos app
+  async openGallery(): Promise<void> {
+    try {
+      if (Platform.OS === 'ios') {
+        // Open iOS Photos app
+        await Linking.openURL('photos-redirect://');
+      } else {
+        // Open Android Gallery/Photos
+        await Linking.openURL('content://media/internal/images/media');
+      }
+    } catch (error) {
+      console.error('Error opening gallery:', error);
+      // Fallback: try to open the Photos app directly
+      try {
+        if (Platform.OS === 'ios') {
+          await Linking.openURL('photos://');
+        }
+      } catch (fallbackError) {
+        console.error('Fallback also failed:', fallbackError);
+      }
+    }
   }
 }
 

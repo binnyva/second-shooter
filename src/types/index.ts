@@ -37,7 +37,7 @@ export type Response =
   | { type: 'PHOTO_TAKEN'; success: boolean; error?: string }
   | { type: 'RECORDING_STARTED' }
   | { type: 'RECORDING_STOPPED'; success: boolean; error?: string }
-  | { type: 'STATE_UPDATE'; state: CameraState }
+  | { type: 'STATE_UPDATE'; state: CameraState; lenses?: LensInfo[] }
   | { type: 'ERROR'; message: string };
 
 // WebRTC connection states
@@ -75,4 +75,12 @@ export interface IceCandidate {
   candidate: string;
   sdpMLineIndex: number | null;
   sdpMid: string | null;
+}
+
+// Camera lens information for lens selector UI
+export interface LensInfo {
+  id: string;
+  label: string;     // "F", ".6", "1", "3", "5" etc.
+  zoom: number;      // Actual zoom factor
+  isActive: boolean;
 }

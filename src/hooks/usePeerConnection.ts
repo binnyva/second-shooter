@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { MediaStream } from 'react-native-webrtc';
 import { webRTCService } from '../services/WebRTCService';
-import { ConnectionState, Command, Response, IceCandidate, CameraState } from '../types';
+import { ConnectionState, Command, Response, IceCandidate, CameraState, LensInfo } from '../types';
 
 type Role = 'camera' | 'remote';
 
@@ -24,7 +24,7 @@ interface UsePeerConnectionReturn {
   addIceCandidate: (candidate: IceCandidate) => Promise<void>;
   sendCommand: (command: Command) => void;
   sendResponse: (response: Response) => void;
-  sendStateUpdate: (state: CameraState) => void;
+  sendStateUpdate: (state: CameraState, lenses?: LensInfo[]) => void;
   startLocalStream: () => Promise<MediaStream>;
   close: () => void;
 }
@@ -126,10 +126,11 @@ export function usePeerConnection({
   }, []);
 
   // Send state update (camera device)
-  const sendStateUpdate = useCallback((state: CameraState): void => {
+  const sendStateUpdate = useCallback((state: CameraState, lenses?: LensInfo[]): void => {
     webRTCService.sendResponse({
       type: 'STATE_UPDATE',
       state,
+      lenses,
     });
   }, []);
 

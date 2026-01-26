@@ -2,7 +2,6 @@ import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   StyleSheet,
-  TouchableOpacity,
   Text,
   Alert,
 } from 'react-native';
@@ -13,7 +12,7 @@ import { RemotePreview } from '../src/components/RemotePreview';
 import { CameraControls } from '../src/components/CameraControls';
 import { useSignaling } from '../src/hooks/useSignaling';
 import { usePeerConnection } from '../src/hooks/usePeerConnection';
-import { CameraState, Response, FlashMode, CaptureMode } from '../src/types';
+import { CameraState, Response, FlashMode, CaptureMode, LensInfo } from '../src/types';
 
 const DEFAULT_STATE: CameraState = {
   zoom: 1,
@@ -29,6 +28,7 @@ export default function RemoteScreen() {
   // UI state
   const [showScanner, setShowScanner] = useState(true);
   const [remoteState, setRemoteState] = useState<CameraState>(DEFAULT_STATE);
+  const [remoteLenses, setRemoteLenses] = useState<LensInfo[]>([]);
 
   // Signaling
   const {
@@ -48,6 +48,9 @@ export default function RemoteScreen() {
     switch (response.type) {
       case 'STATE_UPDATE':
         setRemoteState(response.state);
+        if (response.lenses) {
+          setRemoteLenses(response.lenses);
+        }
         break;
 
       case 'PHOTO_TAKEN':
@@ -183,6 +186,31 @@ export default function RemoteScreen() {
     router.back();
   };
 
+  // Handle QR scanner button - show scanner to connect to a new camera
+  const handleQRPress = () => {
+    // Cleanup existing connection and show scanner
+    cleanupSignaling();
+    closeConnection();
+    setShowScanner(true);
+  };
+
+  // Handle mode toggle - navigate back to camera mode
+  const handleModeToggle = () => {
+    cleanupSignaling();
+    closeConnection();
+    router.replace('/');
+  };
+
+  // Handle settings press (placeholder)
+  const handleSettingsPress = () => {
+    Alert.alert('Settings', 'Settings coming soon!');
+  };
+
+  // Handle lens selection - send command to camera
+  const handleLensSelect = useCallback((zoom: number) => {
+    sendCommand({ type: 'SET_ZOOM', level: zoom });
+  }, [sendCommand]);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -219,12 +247,13 @@ export default function RemoteScreen() {
             onZoomChange={handleZoomChange}
             onCaptureModeChange={handleCaptureModeChange}
             disabled={connectionState !== 'connected'}
+            onSettingsPress={handleSettingsPress}
+            onQRPress={handleQRPress}
+            onModeToggle={handleModeToggle}
+            onLensSelect={handleLensSelect}
+            availableLenses={remoteLenses}
+            currentMode="remote"
           />
-
-          {/* Back button */}
-          <TouchableOpacity style={styles.backButton} onPress={handleBack}>
-            <Text style={styles.backButtonText}>← Back</Text>
-          </TouchableOpacity>
 
           {/* Session info */}
           {sessionId && (
@@ -245,23 +274,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000',
   },
-  backButton: {
-    position: 'absolute',
-    top: 60,
-    left: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-  },
-  backButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
   sessionInfo: {
     position: 'absolute',
-    top: 100,
+    top: 60,
     alignSelf: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     paddingHorizontal: 12,

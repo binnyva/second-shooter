@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -19,11 +19,12 @@ import { useCamera } from '../src/hooks/useCamera';
 import { useSignaling } from '../src/hooks/useSignaling';
 import { usePeerConnection } from '../src/hooks/usePeerConnection';
 import { requestMediaLibraryPermission } from '../src/utils/permissions';
-import { Command, CameraState } from '../src/types';
+import { detectLenses } from '../src/utils/lensDetection';
+import { mediaService } from '../src/services/MediaService';
+import { Command, CameraState, LensInfo } from '../src/types';
 
 export default function CameraScreen() {
   const router = useRouter();
-  const cameraRef = useRef<Camera>(null);
 
   // Permissions
   const { hasPermission: hasCameraPermission, requestPermission: requestCameraPermission } =
@@ -31,8 +32,9 @@ export default function CameraScreen() {
   const { hasPermission: hasMicPermission, requestPermission: requestMicPermission } =
     useMicrophonePermission();
 
-  // Camera state
+  // Camera state - use cameraRef from the hook
   const {
+    cameraRef,
     state: cameraState,
     setZoom,
     toggleFlash,
@@ -47,6 +49,13 @@ export default function CameraScreen() {
   // QR code state
   const [showQR, setShowQR] = useState(false);
   const [isRemoteConnected, setIsRemoteConnected] = useState(false);
+
+  // Last photo and lenses state
+  const [lastPhotoUri, setLastPhotoUri] = useState<string | undefined>();
+  const [availableLenses, setAvailableLenses] = useState<LensInfo[]>([]);
+
+  // Track if WebRTC is using the camera (to deactivate vision-camera)
+  const [isStreamingToRemote, setIsStreamingToRemote] = useState(false);
 
   // Signaling
   const {
@@ -93,24 +102,24 @@ export default function CameraScreen() {
 
       case 'SET_ZOOM':
         setZoom(command.level);
-        sendStateUpdate(cameraState);
+        sendStateUpdate(cameraState, availableLenses);
         break;
 
       case 'SET_FLASH':
         updateState({ flash: command.mode });
-        sendStateUpdate(cameraState);
+        sendStateUpdate(cameraState, availableLenses);
         break;
 
       case 'SWITCH_CAMERA':
         switchCamera();
-        sendStateUpdate(cameraState);
+        sendStateUpdate(cameraState, availableLenses);
         break;
 
       case 'GET_STATE':
-        sendStateUpdate(cameraState);
+        sendStateUpdate(cameraState, availableLenses);
         break;
     }
-  }, [takePhoto, startRecording, stopRecording, setZoom, updateState, switchCamera, cameraState]);
+  }, [takePhoto, startRecording, stopRecording, setZoom, updateState, switchCamera, cameraState, availableLenses]);
 
   // WebRTC connection
   const {
@@ -128,8 +137,9 @@ export default function CameraScreen() {
     onCommand: handleCommand,
   });
 
-  // Get camera device
+  // Get camera devices - always get back camera for consistent lens detection
   const device = useCameraDevice(cameraState.facing);
+  const backDevice = useCameraDevice('back');
 
   // Request permissions on mount
   useEffect(() => {
@@ -145,9 +155,34 @@ export default function CameraScreen() {
     requestPermissions();
   }, [hasCameraPermission, hasMicPermission, requestCameraPermission, requestMicPermission]);
 
+  // Detect available lenses - always use backDevice for consistent lens list
+  useEffect(() => {
+    if (backDevice) {
+      const lenses = detectLenses(backDevice, cameraState.facing, cameraState.zoom);
+      setAvailableLenses(lenses);
+    }
+  }, [backDevice, cameraState.facing, cameraState.zoom]);
+
+  // Load last photo on mount
+  useEffect(() => {
+    const loadLastPhoto = async () => {
+      const photo = await mediaService.getLastPhoto();
+      if (photo) {
+        setLastPhotoUri(photo.uri);
+      }
+    };
+    loadLastPhoto();
+  }, []);
+
   // Handle QR code display and session creation
   const handleShowQR = async () => {
     try {
+      // Deactivate vision-camera before WebRTC takes over
+      setIsStreamingToRemote(true);
+
+      // Small delay to ensure camera is released
+      await new Promise(resolve => setTimeout(resolve, 100));
+
       // Create signaling session
       const newSessionId = await createSession();
       console.log('Created session:', newSessionId);
@@ -183,6 +218,7 @@ export default function CameraScreen() {
     } catch (error) {
       console.error('Error setting up remote connection:', error);
       Alert.alert('Error', 'Failed to create remote connection');
+      setIsStreamingToRemote(false);
     }
   };
 
@@ -190,6 +226,7 @@ export default function CameraScreen() {
     setShowQR(false);
     cleanupSignaling();
     closeConnection();
+    setIsStreamingToRemote(false);
   };
 
   // Update remote connection state
@@ -197,22 +234,53 @@ export default function CameraScreen() {
     if (connectionState === 'connected') {
       setIsRemoteConnected(true);
       // Send initial state to remote
-      sendStateUpdate(cameraState);
+      sendStateUpdate(cameraState, availableLenses);
     } else if (connectionState === 'failed' || connectionState === 'disconnected') {
       setIsRemoteConnected(false);
     }
-  }, [connectionState, cameraState, sendStateUpdate]);
+  }, [connectionState, cameraState, availableLenses, sendStateUpdate]);
 
   // Send state updates when camera state changes
   useEffect(() => {
     if (isRemoteConnected) {
-      sendStateUpdate(cameraState);
+      sendStateUpdate(cameraState, availableLenses);
     }
-  }, [cameraState, isRemoteConnected, sendStateUpdate]);
+  }, [cameraState, availableLenses, isRemoteConnected, sendStateUpdate]);
 
   // Navigate to remote screen
   const handleGoToRemote = () => {
     router.push('/remote');
+  };
+
+  // Handle opening gallery
+  const handleOpenGallery = async () => {
+    await mediaService.openGallery();
+  };
+
+  // Handle settings press (placeholder for now)
+  const handleSettingsPress = () => {
+    Alert.alert('Settings', 'Settings coming soon!');
+  };
+
+  // Handle lens selection
+  const handleLensSelect = (zoom: number) => {
+    setZoom(zoom);
+  };
+
+  // Wrap takePhoto to update lastPhotoUri after capturing
+  const handleTakePhoto = async () => {
+    try {
+      await takePhoto();
+      // Refresh last photo after a brief delay to allow save to complete
+      setTimeout(async () => {
+        const photo = await mediaService.getLastPhoto();
+        if (photo) {
+          setLastPhotoUri(photo.uri);
+        }
+      }, 500);
+    } catch (error) {
+      console.error('Error taking photo:', error);
+    }
   };
 
   if (!hasCameraPermission || !hasMicPermission) {
@@ -244,12 +312,12 @@ export default function CameraScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Camera preview */}
+      {/* Camera preview - deactivate when WebRTC is streaming */}
       <Camera
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         device={device}
-        isActive={true}
+        isActive={!isStreamingToRemote}
         photo={true}
         video={true}
         audio={true}
@@ -260,30 +328,22 @@ export default function CameraScreen() {
       {/* Camera controls */}
       <CameraControls
         cameraState={cameraState}
-        onTakePhoto={takePhoto}
+        onTakePhoto={handleTakePhoto}
         onStartRecording={startRecording}
         onStopRecording={stopRecording}
         onToggleFlash={toggleFlash}
         onSwitchCamera={switchCamera}
         onZoomChange={setZoom}
         onCaptureModeChange={setCaptureMode}
+        lastPhotoUri={lastPhotoUri}
+        onOpenGallery={handleOpenGallery}
+        onSettingsPress={handleSettingsPress}
+        onQRPress={handleShowQR}
+        onModeToggle={handleGoToRemote}
+        onLensSelect={handleLensSelect}
+        availableLenses={availableLenses}
+        currentMode="camera"
       />
-
-      {/* Remote button */}
-      <TouchableOpacity
-        style={styles.remoteButton}
-        onPress={handleShowQR}
-      >
-        <Text style={styles.remoteButtonText}>Remote</Text>
-      </TouchableOpacity>
-
-      {/* Be Remote button */}
-      <TouchableOpacity
-        style={styles.beRemoteButton}
-        onPress={handleGoToRemote}
-      >
-        <Text style={styles.beRemoteButtonText}>Be Remote</Text>
-      </TouchableOpacity>
 
       {/* Connection indicator */}
       {isRemoteConnected && (
@@ -340,37 +400,9 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
   },
-  remoteButton: {
-    position: 'absolute',
-    top: 60,
-    right: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-  },
-  remoteButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  beRemoteButton: {
-    position: 'absolute',
-    top: 60,
-    left: 20,
-    backgroundColor: 'rgba(0, 122, 255, 0.8)',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-  },
-  beRemoteButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
   connectionIndicator: {
     position: 'absolute',
-    top: 100,
+    top: 60,
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',

@@ -26,6 +26,7 @@ export function useSignaling(role: Role): UseSignalingReturn {
   const [error, setError] = useState<string | null>(null);
 
   const unsubscribersRef = useRef<Unsubscribe[]>([]);
+  const sessionIdRef = useRef<string | null>(null);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -42,6 +43,7 @@ export function useSignaling(role: Role): UseSignalingReturn {
     // Cleanup signaling service
     signalingService.cleanup();
 
+    sessionIdRef.current = null;
     setSessionId(null);
     setIsConnected(false);
     setError(null);
@@ -52,6 +54,7 @@ export function useSignaling(role: Role): UseSignalingReturn {
     try {
       setError(null);
       const id = await signalingService.createSession();
+      sessionIdRef.current = id;
       setSessionId(id);
       return id;
     } catch (err) {
@@ -68,6 +71,7 @@ export function useSignaling(role: Role): UseSignalingReturn {
       const success = await signalingService.joinSession(id);
 
       if (success) {
+        sessionIdRef.current = id;
         setSessionId(id);
         return true;
       } else {
@@ -83,88 +87,94 @@ export function useSignaling(role: Role): UseSignalingReturn {
 
   // Send WebRTC offer
   const sendOffer = useCallback(async (offer: SignalingOffer): Promise<void> => {
-    if (!sessionId) {
+    const currentSessionId = sessionIdRef.current;
+    if (!currentSessionId) {
       throw new Error('No active session');
     }
 
     try {
-      await signalingService.sendOffer(sessionId, offer);
+      await signalingService.sendOffer(currentSessionId, offer);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to send offer';
       setError(message);
       throw err;
     }
-  }, [sessionId]);
+  }, []);
 
   // Send WebRTC answer
   const sendAnswer = useCallback(async (answer: SignalingAnswer): Promise<void> => {
-    if (!sessionId) {
+    const currentSessionId = sessionIdRef.current;
+    if (!currentSessionId) {
       throw new Error('No active session');
     }
 
     try {
-      await signalingService.sendAnswer(sessionId, answer);
+      await signalingService.sendAnswer(currentSessionId, answer);
       setIsConnected(true);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to send answer';
       setError(message);
       throw err;
     }
-  }, [sessionId]);
+  }, []);
 
   // Add ICE candidate
   const addIceCandidate = useCallback(async (candidate: IceCandidate): Promise<void> => {
-    if (!sessionId) {
+    const currentSessionId = sessionIdRef.current;
+    if (!currentSessionId) {
       throw new Error('No active session');
     }
 
     try {
       // Role determines which subcollection to use
       const candidateRole = role === 'camera' ? 'offer' : 'answer';
-      await signalingService.addIceCandidate(sessionId, candidate, candidateRole);
+      await signalingService.addIceCandidate(currentSessionId, candidate, candidateRole);
     } catch (err) {
       console.error('Failed to add ICE candidate:', err);
       // Don't throw - ICE candidate failures are often recoverable
     }
-  }, [sessionId, role]);
+  }, [role]);
 
   // Listen for offer (remote device listens)
   const onOffer = useCallback((callback: (offer: SignalingOffer) => void): void => {
-    if (!sessionId) {
+    const currentSessionId = sessionIdRef.current;
+    if (!currentSessionId) {
       console.error('No active session');
       return;
     }
 
-    const unsubscribe = signalingService.onOffer(sessionId, callback);
+    const unsubscribe = signalingService.onOffer(currentSessionId, callback);
     unsubscribersRef.current.push(unsubscribe);
-  }, [sessionId]);
+  }, []);
 
   // Listen for answer (camera device listens)
   const onAnswer = useCallback((callback: (answer: SignalingAnswer) => void): void => {
-    if (!sessionId) {
+    const currentSessionId = sessionIdRef.current;
+    if (!currentSessionId) {
       console.error('No active session');
       return;
     }
 
-    const unsubscribe = signalingService.onAnswer(sessionId, (answer) => {
+    const unsubscribe = signalingService.onAnswer(currentSessionId, (answer) => {
       setIsConnected(true);
       callback(answer);
     });
     unsubscribersRef.current.push(unsubscribe);
-  }, [sessionId]);
+  }, []);
 
   // Listen for ICE candidates
   const onIceCandidate = useCallback((callback: (candidate: IceCandidate) => void): void => {
-    if (!sessionId) {
+    const currentSessionId = sessionIdRef.current;
+    if (!currentSessionId) {
       console.error('No active session');
       return;
     }
 
     // Camera listens for answer candidates, remote listens for offer candidates
     const candidateRole = role === 'camera' ? 'answer' : 'offer';
-    const unsubscribe = signalingService.onIceCandidate(sessionId, candidateRole, callback);
+    const unsubscribe = signalingService.onIceCandidate(currentSessionId, candidateRole, callback);
     unsubscribersRef.current.push(unsubscribe);
-  }, [sessionId, role]);
+  }, [role]);
 
   return {
     sessionId,
