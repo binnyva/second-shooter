@@ -53,7 +53,7 @@ class CameraService {
     try {
       const photo = await this.cameraRef.takePhoto({
         flash: this.state.flash === 'auto' ? 'on' : this.state.flash,
-        enableShutterSound: true,
+        enableShutterSound: false,
       });
       return photo;
     } catch (error) {

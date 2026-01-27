@@ -74,7 +74,7 @@ export function useCamera(initialState?: Partial<CameraState>) {
     try {
       const photo = await cameraRef.current.takePhoto({
         flash: state.flash === 'auto' ? 'on' : state.flash,
-        enableShutterSound: true,
+        enableShutterSound: false,
       });
 
       // Save to gallery

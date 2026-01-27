@@ -78,7 +78,7 @@ export function CameraView({
     try {
       const photo = await cameraRef.current.takePhoto({
         flash: cameraState.flash === 'auto' ? 'on' : cameraState.flash,
-        enableShutterSound: true,
+        enableShutterSound: false,
       });
 
       // Save to gallery
