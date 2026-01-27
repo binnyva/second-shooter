@@ -288,14 +288,22 @@ export function CameraControls({
                     onPress={() => handleLensPress(lens)}
                     disabled={disabled}
                   >
-                    <Text
-                      style={[
-                        styles.lensButtonText,
-                        lens.isActive && styles.lensButtonTextActive,
-                      ]}
-                    >
-                      {lens.label}
-                    </Text>
+                    {lens.id === 'selfie' ? (
+                      <MaterialCommunityIcons
+                        name="camera-flip-outline"
+                        size={18}
+                        color={lens.isActive ? '#000' : '#fff'}
+                      />
+                    ) : (
+                      <Text
+                        style={[
+                          styles.lensButtonText,
+                          lens.isActive && styles.lensButtonTextActive,
+                        ]}
+                      >
+                        {lens.label}
+                      </Text>
+                    )}
                   </TouchableOpacity>
                 ))
               ) : (
