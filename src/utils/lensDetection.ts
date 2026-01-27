@@ -1,9 +1,19 @@
-import { CameraDevice } from 'react-native-vision-camera';
+import { CameraDevice, PhysicalCameraDeviceType } from 'react-native-vision-camera';
 import { LensInfo, CameraFacing } from '../types';
 
 /**
- * Detects available camera lenses and returns lens info for UI display.
- * Maps physical device zoom factors to user-friendly labels.
+ * Physical device types and their typical zoom factors relative to wide-angle (1x).
+ * These values are approximate and may vary by device manufacturer.
+ */
+const PHYSICAL_DEVICE_ZOOM_MAP: Record<PhysicalCameraDeviceType, number> = {
+  'ultra-wide-angle-camera': 0.5,
+  'wide-angle-camera': 1,
+  'telephoto-camera': 2, // Can be 2x, 3x, 5x depending on device
+};
+
+/**
+ * Detects available camera lenses from the device's physicalDevices array
+ * and returns lens info for UI display with proper optical zoom levels.
  */
 export function detectLenses(
   device: CameraDevice | undefined,
@@ -25,21 +35,25 @@ export function detectLenses(
     isActive: isFrontCamera,
   });
 
-  // Always show back camera zoom levels (inactive when on front camera)
-  // Detect available zoom levels
-  // react-native-vision-camera exposes minZoom/maxZoom and neutralZoom
-  const neutralZoom = device.neutralZoom ?? 1;
+  // Get physical devices from the camera device
+  const physicalDevices = device.physicalDevices || [];
   const minZoom = device.minZoom ?? 1;
   const maxZoom = device.maxZoom ?? 10;
+  const neutralZoom = device.neutralZoom ?? 1;
 
-  // Common lens configurations on modern phones:
-  // - Ultra-wide: 0.5x - 0.6x
-  // - Wide (main): 1x
-  // - Telephoto: 2x, 3x, or 5x
+  console.log('[LensDetection] Device:', device.name);
+  console.log('[LensDetection] Physical devices:', physicalDevices);
+  console.log('[LensDetection] Zoom range:', minZoom, '-', maxZoom, 'neutral:', neutralZoom);
 
-  // Check if device supports ultra-wide (minZoom less than 1)
-  if (minZoom < 1) {
-    const ultraWideZoom = Math.max(minZoom, 0.5);
+  // Build lens list based on physical devices
+  const hasUltraWide = physicalDevices.includes('ultra-wide-angle-camera');
+  const hasWide = physicalDevices.includes('wide-angle-camera');
+  const hasTelephoto = physicalDevices.includes('telephoto-camera');
+
+  // Ultra-wide lens (typically 0.5x or 0.6x)
+  if (hasUltraWide && minZoom < 1) {
+    // Use the actual minZoom reported by the device for ultra-wide
+    const ultraWideZoom = minZoom;
     lenses.push({
       id: 'ultra-wide',
       label: formatZoomLabel(ultraWideZoom),
@@ -48,7 +62,7 @@ export function detectLenses(
     });
   }
 
-  // Main lens (1x)
+  // Wide/main lens (1x) - always present as it's the reference point
   lenses.push({
     id: 'wide',
     label: '1',
@@ -56,31 +70,25 @@ export function detectLenses(
     isActive: !isFrontCamera && isZoomActive(currentZoom, 1),
   });
 
-  // Check for telephoto capabilities
-  if (maxZoom >= 2) {
+  // Telephoto lens - detect the actual zoom factor
+  if (hasTelephoto) {
+    // The telephoto zoom is typically maxZoom for the optical range,
+    // or we can estimate from common configurations
+    const telephotoZoom = detectTelephotoZoom(device);
     lenses.push({
-      id: 'telephoto-2x',
+      id: 'telephoto',
+      label: formatZoomLabel(telephotoZoom),
+      zoom: telephotoZoom,
+      isActive: !isFrontCamera && isZoomActive(currentZoom, telephotoZoom),
+    });
+  } else if (maxZoom >= 2) {
+    // No dedicated telephoto, but device supports digital zoom
+    // Add a 2x option for convenience
+    lenses.push({
+      id: 'digital-2x',
       label: '2',
       zoom: 2,
       isActive: !isFrontCamera && isZoomActive(currentZoom, 2),
-    });
-  }
-
-  if (maxZoom >= 3) {
-    lenses.push({
-      id: 'telephoto-3x',
-      label: '3',
-      zoom: 3,
-      isActive: !isFrontCamera && isZoomActive(currentZoom, 3),
-    });
-  }
-
-  if (maxZoom >= 5) {
-    lenses.push({
-      id: 'telephoto-5x',
-      label: '5',
-      zoom: 5,
-      isActive: !isFrontCamera && isZoomActive(currentZoom, 5),
     });
   }
 
@@ -108,6 +116,30 @@ export function detectLenses(
   }
 
   return lenses;
+}
+
+/**
+ * Attempts to detect the telephoto zoom factor from device characteristics.
+ * Modern phones typically have 2x, 3x, or 5x telephoto lenses.
+ */
+function detectTelephotoZoom(device: CameraDevice): number {
+  const maxZoom = device.maxZoom ?? 10;
+  const minZoom = device.minZoom ?? 1;
+
+  // Common telephoto configurations:
+  // - 2x telephoto: maxZoom often around 8-10x (4-5x digital on top of 2x optical)
+  // - 3x telephoto: maxZoom often around 15-30x
+  // - 5x telephoto: maxZoom often around 50-100x
+
+  // Heuristic: the optical telephoto is usually where the device
+  // can maintain good quality. We'll estimate based on maxZoom.
+  if (maxZoom >= 50) {
+    return 5; // 5x telephoto (like Samsung S21 Ultra, Pixel 7 Pro)
+  } else if (maxZoom >= 15) {
+    return 3; // 3x telephoto (like iPhone 13 Pro, Pixel 6 Pro)
+  } else {
+    return 2; // 2x telephoto (most common)
+  }
 }
 
 /**

@@ -118,10 +118,10 @@ class CameraService {
     }
   }
 
-  // Set zoom level
+  // Set zoom level (supports ultra-wide at 0.5x)
   setZoom(level: number): void {
-    // Clamp zoom between 1 and 10
-    const clampedZoom = Math.max(1, Math.min(10, level));
+    // Clamp zoom between 0.5 and 10 to support ultra-wide cameras
+    const clampedZoom = Math.max(0.5, Math.min(10, level));
     this.updateState({ zoom: clampedZoom });
   }
 

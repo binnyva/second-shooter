@@ -38,7 +38,15 @@ export function CameraView({
     externalState || cameraService.getState()
   );
 
-  const device = useCameraDevice(cameraState.facing);
+  // Request a multi-camera device that includes all physical lenses
+  // This enables optical zoom switching between ultra-wide, wide, and telephoto
+  const device = useCameraDevice(cameraState.facing, {
+    physicalDevices: [
+      'ultra-wide-angle-camera',
+      'wide-angle-camera',
+      'telephoto-camera',
+    ],
+  });
 
   // Sync with external state if provided
   useEffect(() => {
@@ -125,7 +133,7 @@ export function CameraView({
 
   const handleZoomChange = useCallback(
     (zoom: number) => {
-      updateState({ zoom: Math.max(1, Math.min(10, zoom)) });
+      updateState({ zoom: Math.max(0.5, Math.min(10, zoom)) });
     },
     [updateState]
   );

@@ -23,9 +23,9 @@ export function useCamera(initialState?: Partial<CameraState>) {
     setState((prev) => ({ ...prev, ...updates }));
   }, []);
 
-  // Set zoom level (1-10)
+  // Set zoom level (0.5-10, supports ultra-wide)
   const setZoom = useCallback((zoom: number) => {
-    const clampedZoom = Math.max(1, Math.min(10, zoom));
+    const clampedZoom = Math.max(0.5, Math.min(10, zoom));
     updateState({ zoom: clampedZoom });
   }, [updateState]);
 

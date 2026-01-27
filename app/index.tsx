@@ -272,9 +272,23 @@ export default function CameraScreen() {
     },
   });
 
-  // Get camera devices - always get back camera for consistent lens detection
-  const device = useCameraDevice(cameraState.facing);
-  const backDevice = useCameraDevice('back');
+  // Get camera devices with multi-camera support for optical zoom
+  // Request all physical devices to enable lens switching
+  const device = useCameraDevice(cameraState.facing, {
+    physicalDevices: [
+      'ultra-wide-angle-camera',
+      'wide-angle-camera',
+      'telephoto-camera',
+    ],
+  });
+  // Always get back camera with all lenses for consistent lens detection
+  const backDevice = useCameraDevice('back', {
+    physicalDevices: [
+      'ultra-wide-angle-camera',
+      'wide-angle-camera',
+      'telephoto-camera',
+    ],
+  });
 
   // Request permissions on mount
   useEffect(() => {
