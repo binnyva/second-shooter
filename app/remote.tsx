@@ -84,6 +84,15 @@ export default function RemoteScreen() {
     console.log('Received remote stream');
   }, []);
 
+  // Track data channel ready state
+  const [isDataChannelReady, setIsDataChannelReady] = useState(false);
+
+  // Handle data channel open
+  const handleDataChannelOpen = useCallback(() => {
+    console.log('Data channel is now ready');
+    setIsDataChannelReady(true);
+  }, []);
+
   // WebRTC connection
   const {
     connectionState,
@@ -103,6 +112,7 @@ export default function RemoteScreen() {
       console.log('Sending ICE candidate to signaling');
       await addSignalingIceCandidate(candidate);
     },
+    onDataChannelOpen: handleDataChannelOpen,
   });
 
   // Handle QR code scan
@@ -140,11 +150,6 @@ export default function RemoteScreen() {
 
       // Hide scanner
       setShowScanner(false);
-
-      // Request initial state
-      setTimeout(() => {
-        sendCommand({ type: 'GET_STATE' });
-      }, 1000);
 
     } catch (error) {
       console.error('Error connecting to camera:', error);
@@ -188,6 +193,7 @@ export default function RemoteScreen() {
   const handleBack = () => {
     cleanupSignaling();
     closeConnection();
+    setIsDataChannelReady(false);
     router.back();
   };
 
@@ -196,6 +202,7 @@ export default function RemoteScreen() {
     // Cleanup existing connection and show scanner
     cleanupSignaling();
     closeConnection();
+    setIsDataChannelReady(false);
     setShowScanner(true);
   };
 
@@ -203,6 +210,7 @@ export default function RemoteScreen() {
   const handleModeToggle = () => {
     cleanupSignaling();
     closeConnection();
+    setIsDataChannelReady(false);
     router.replace('/');
   };
 
@@ -215,6 +223,14 @@ export default function RemoteScreen() {
   const handleLensSelect = useCallback((zoom: number) => {
     sendCommand({ type: 'SET_ZOOM', level: zoom });
   }, [sendCommand]);
+
+  // Request initial state when data channel becomes ready
+  useEffect(() => {
+    if (isDataChannelReady && !showScanner) {
+      console.log('Data channel ready, requesting initial state');
+      sendCommand({ type: 'GET_STATE' });
+    }
+  }, [isDataChannelReady, showScanner, sendCommand]);
 
   // Cleanup on unmount
   useEffect(() => {

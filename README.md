@@ -111,11 +111,11 @@ second-shooter/
 ### Prerequisites
 
 - Node.js (v18 or higher)
-- React Native development environment set up
-- iOS: Xcode and CocoaPods
 - Android: Android Studio and JDK
+- iOS: Xcode and CocoaPods
+- Physical devices for testing (camera and WebRTC don't work in emulators/simulators)
 
-### Setup
+### Initial Setup (one-time)
 
 ```bash
 # Clone the repository
@@ -125,17 +125,26 @@ cd second-shooter
 # Install dependencies
 npm install
 
-# iOS only: Install pods
-cd ios && pod install && cd ..
+# Build and install the development client on your Android device
+npx expo run:android
+```
 
-# Run on iOS
-npm run ios
+This builds the native app with all required modules and installs it on your device.
 
-# Run on Android
-npm run android
+### Ongoing Development
 
+```bash
+# Start the development server
+npx expo start --dev-client
+```
 
-# Build APK for Android
+Your device connects to this server and hot-reloads JavaScript changes instantly - no new APK needed. Make sure your device and development machine are on the same network.
+
+**When to rebuild**: Only run `npx expo run:android` again if you add/remove native dependencies, change `app.json` config, or modify the `android/` directory.
+
+### Release Build
+
+```bash
 npx expo run:android --variant release
 ```
 
@@ -247,6 +256,11 @@ The app requires camera and microphone permissions. These are configured in:
 - **Battery Usage**: Streaming video consumes significant battery on both devices
 - **Firewall Restrictions**: Some corporate/restrictive networks may block P2P connections
 - **Platform Differences**: Some advanced camera features may only be available on one platform
+- **Preview Loss During Recording**: Remote preview stops during video recording due to camera resource conflict between WebRTC and vision-camera
+
+## TODO / Future Improvements
+
+- **Unified Camera Architecture**: Currently WebRTC's `getUserMedia` and react-native-vision-camera compete for camera access, causing preview loss during capture. A future improvement would be to use vision-camera's frame processor to feed frames directly to WebRTC, eliminating the resource conflict and enabling seamless preview during photo/video capture.
 
 ## License
 

@@ -8,24 +8,34 @@ Second Shooter is an Expo React Native mobile app that enables one device to rem
 
 ## Build Commands
 
+### Initial Setup (one-time per device)
+
 ```bash
 # Install dependencies
 npm install
 
-# Generate native projects (required for native modules)
-npx expo prebuild
-
-# Run on iOS (requires prebuild)
-npx expo run:ios
-
-# Run on Android (requires prebuild)
+# Build and install the development client on your Android device
 npx expo run:android
-
-# Start Expo development server (for Expo Go - limited functionality)
-npm start
 ```
 
-**Note:** This app requires `npx expo prebuild` because it uses native modules (react-native-vision-camera, react-native-webrtc) that are not available in Expo Go. You must run the prebuild command first, then use `npx expo run:ios` or `npx expo run:android` to build and run on physical devices.
+This builds the native app with all required modules (react-native-vision-camera, react-native-webrtc) and installs it on your device.
+
+### Ongoing Development
+
+```bash
+# Start the development server
+npx expo start --dev-client
+```
+
+Your device connects to this server and hot-reloads JavaScript changes instantly - no new APK needed.
+
+**When to rebuild**: Only run `npx expo run:android` again if you add/remove native dependencies, change `app.json` config, or modify the `android/` directory.
+
+### Release Build
+
+```bash
+npx expo run:android --variant release
+```
 
 ## Architecture
 

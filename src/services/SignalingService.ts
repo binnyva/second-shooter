@@ -27,9 +27,15 @@ type AnswerCallback = (answer: SignalingAnswer) => void;
 class SignalingService {
   private sessionId: string | null = null;
   private unsubscribers: Unsubscribe[] = [];
+  private processedOfferSdp: string | null = null;
+  private processedAnswerSdp: string | null = null;
 
   // Create a new signaling session
   async createSession(): Promise<string> {
+    // Reset processed flags for new session
+    this.processedOfferSdp = null;
+    this.processedAnswerSdp = null;
+
     const sessionId = generateSessionId();
     const sessionRef = doc(db, SESSIONS_COLLECTION, sessionId);
 
@@ -44,6 +50,10 @@ class SignalingService {
 
   // Join an existing session
   async joinSession(sessionId: string): Promise<boolean> {
+    // Reset processed flags for new session
+    this.processedOfferSdp = null;
+    this.processedAnswerSdp = null;
+
     const sessionRef = doc(db, SESSIONS_COLLECTION, sessionId);
     const sessionDoc = await getDoc(sessionRef);
 
@@ -93,7 +103,9 @@ class SignalingService {
 
     const unsubscribe = onSnapshot(sessionRef, (snapshot) => {
       const data = snapshot.data();
-      if (data?.offer) {
+      if (data?.offer && data.offer.sdp !== this.processedOfferSdp) {
+        // Mark this offer as processed to avoid duplicate handling
+        this.processedOfferSdp = data.offer.sdp;
         callback({
           type: data.offer.type,
           sdp: data.offer.sdp,
@@ -111,7 +123,9 @@ class SignalingService {
 
     const unsubscribe = onSnapshot(sessionRef, (snapshot) => {
       const data = snapshot.data();
-      if (data?.answer) {
+      if (data?.answer && data.answer.sdp !== this.processedAnswerSdp) {
+        // Mark this answer as processed to avoid duplicate handling
+        this.processedAnswerSdp = data.answer.sdp;
         callback({
           type: data.answer.type,
           sdp: data.answer.sdp,
@@ -205,6 +219,10 @@ class SignalingService {
       this.deleteSession(this.sessionId);
       this.sessionId = null;
     }
+
+    // Reset processed flags for next session
+    this.processedOfferSdp = null;
+    this.processedAnswerSdp = null;
   }
 
   // Get current session ID

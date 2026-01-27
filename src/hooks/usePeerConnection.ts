@@ -11,12 +11,14 @@ interface UsePeerConnectionOptions {
   onResponse?: (response: Response) => void;
   onRemoteStream?: (stream: MediaStream) => void;
   onIceCandidate?: (candidate: IceCandidate) => void;
+  onDataChannelOpen?: () => void;
 }
 
 interface UsePeerConnectionReturn {
   connectionState: ConnectionState;
   remoteStream: MediaStream | null;
   localStream: MediaStream | null;
+  isDataChannelReady: boolean;
   createConnection: () => Promise<void>;
   createOffer: () => Promise<RTCSessionDescriptionInit>;
   createAnswer: () => Promise<RTCSessionDescriptionInit>;
@@ -26,6 +28,8 @@ interface UsePeerConnectionReturn {
   sendResponse: (response: Response) => void;
   sendStateUpdate: (state: CameraState, lenses?: LensInfo[]) => void;
   startLocalStream: () => Promise<MediaStream>;
+  pauseLocalStream: () => void;
+  resumeLocalStream: (facingMode?: 'front' | 'back') => Promise<void>;
   close: () => void;
 }
 
@@ -35,10 +39,12 @@ export function usePeerConnection({
   onResponse,
   onRemoteStream,
   onIceCandidate,
+  onDataChannelOpen,
 }: UsePeerConnectionOptions): UsePeerConnectionReturn {
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [isDataChannelReady, setIsDataChannelReady] = useState(false);
 
   const isInitializedRef = useRef(false);
 
@@ -80,13 +86,19 @@ export function usePeerConnection({
       webRTCService.onResponse(onResponse);
     }
 
+    webRTCService.onDataChannelOpen(() => {
+      console.log('Data channel is now ready');
+      setIsDataChannelReady(true);
+      onDataChannelOpen?.();
+    });
+
     // Camera device creates the data channel
     if (role === 'camera') {
       webRTCService.createDataChannel();
     }
 
     setConnectionState('connecting');
-  }, [role, onCommand, onResponse, onRemoteStream, onIceCandidate]);
+  }, [role, onCommand, onResponse, onRemoteStream, onIceCandidate, onDataChannelOpen]);
 
   // Create SDP offer (camera device)
   const createOffer = useCallback(async (): Promise<RTCSessionDescriptionInit> => {
@@ -142,6 +154,20 @@ export function usePeerConnection({
     return stream;
   }, []);
 
+  // Pause local stream (releases camera hardware for vision-camera)
+  const pauseLocalStream = useCallback((): void => {
+    webRTCService.pauseLocalStream();
+  }, []);
+
+  // Resume local stream (gets new stream after vision-camera is done)
+  const resumeLocalStream = useCallback(async (facingMode: 'front' | 'back' = 'back'): Promise<void> => {
+    await webRTCService.resumeLocalStream(facingMode);
+    const stream = webRTCService.getLocalStreamRef();
+    if (stream) {
+      setLocalStream(stream);
+    }
+  }, []);
+
   // Close connection
   const close = useCallback((): void => {
     webRTCService.close();
@@ -149,12 +175,14 @@ export function usePeerConnection({
     setConnectionState('disconnected');
     setRemoteStream(null);
     setLocalStream(null);
+    setIsDataChannelReady(false);
   }, []);
 
   return {
     connectionState,
     remoteStream,
     localStream,
+    isDataChannelReady,
     createConnection,
     createOffer,
     createAnswer,
@@ -164,6 +192,8 @@ export function usePeerConnection({
     sendResponse,
     sendStateUpdate,
     startLocalStream,
+    pauseLocalStream,
+    resumeLocalStream,
     close,
   };
 }

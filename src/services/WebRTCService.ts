@@ -14,6 +14,7 @@ type ResponseCallback = (response: Response) => void;
 type StreamCallback = (stream: MediaStream) => void;
 type StateCallback = (state: ConnectionState) => void;
 type IceCandidateEmitCallback = (candidate: IceCandidate) => void;
+type DataChannelOpenCallback = () => void;
 
 // Type definitions for react-native-webrtc events
 interface RTCPeerConnectionIceEvent {
@@ -40,6 +41,7 @@ class WebRTCService {
   private onRemoteStreamCallback: StreamCallback | null = null;
   private onConnectionStateCallback: StateCallback | null = null;
   private onIceCandidateCallback: IceCandidateEmitCallback | null = null;
+  private onDataChannelOpenCallback: DataChannelOpenCallback | null = null;
 
   // Create peer connection
   createPeerConnection(): RTCPeerConnection {
@@ -133,6 +135,9 @@ class WebRTCService {
 
     channel.onopen = () => {
       console.log('Data channel opened');
+      if (this.onDataChannelOpenCallback) {
+        this.onDataChannelOpenCallback();
+      }
     };
 
     channel.onclose = () => {
@@ -339,6 +344,11 @@ class WebRTCService {
     this.onIceCandidateCallback = callback;
   }
 
+  // Set callback for data channel open
+  onDataChannelOpen(callback: DataChannelOpenCallback): void {
+    this.onDataChannelOpenCallback = callback;
+  }
+
   // Get remote stream
   getRemoteStream(): MediaStream | null {
     return this.remoteStream;
@@ -347,6 +357,41 @@ class WebRTCService {
   // Get local stream
   getLocalStreamRef(): MediaStream | null {
     return this.localStream;
+  }
+
+  // Pause local stream (stops video track to release camera hardware)
+  pauseLocalStream(): void {
+    if (this.localStream) {
+      this.localStream.getVideoTracks().forEach((track) => track.stop());
+    }
+  }
+
+  // Resume local stream (gets new stream and replaces tracks)
+  async resumeLocalStream(facingMode: 'front' | 'back' = 'back'): Promise<void> {
+    if (!this.peerConnection) {
+      console.error('Peer connection not initialized for stream resume');
+      return;
+    }
+
+    try {
+      // Get a new stream
+      const newStream = await this.getLocalStream(facingMode);
+
+      // Replace the tracks in the peer connection
+      const senders = this.peerConnection.getSenders();
+      const videoTrack = newStream.getVideoTracks()[0];
+      const audioTrack = newStream.getAudioTracks()[0];
+
+      for (const sender of senders) {
+        if (sender.track?.kind === 'video' && videoTrack) {
+          await sender.replaceTrack(videoTrack);
+        } else if (sender.track?.kind === 'audio' && audioTrack) {
+          await sender.replaceTrack(audioTrack);
+        }
+      }
+    } catch (error) {
+      console.error('Error resuming local stream:', error);
+    }
   }
 
   // Check if data channel is ready
@@ -377,6 +422,7 @@ class WebRTCService {
     this.onRemoteStreamCallback = null;
     this.onConnectionStateCallback = null;
     this.onIceCandidateCallback = null;
+    this.onDataChannelOpenCallback = null;
   }
 }
 

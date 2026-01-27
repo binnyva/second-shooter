@@ -21,6 +21,7 @@ import { usePeerConnection } from '../src/hooks/usePeerConnection';
 import { requestMediaLibraryPermission } from '../src/utils/permissions';
 import { detectLenses } from '../src/utils/lensDetection';
 import { mediaService } from '../src/services/MediaService';
+import { webRTCService } from '../src/services/WebRTCService';
 import { Command, CameraState, LensInfo } from '../src/types';
 
 export default function CameraScreen() {
@@ -57,6 +58,7 @@ export default function CameraScreen() {
   // Track if WebRTC is using the camera (to deactivate vision-camera)
   const [isStreamingToRemote, setIsStreamingToRemote] = useState(false);
 
+
   // Signaling
   const {
     sessionId,
@@ -68,14 +70,85 @@ export default function CameraScreen() {
     cleanup: cleanupSignaling,
   } = useSignaling('camera');
 
+  // Reference to track if we need to reactivate streaming after photo
+  const pendingPhotoResolve = React.useRef<(() => void) | null>(null);
+
+  // Handle camera becoming active again after being reactivated for photo
+  const handleCameraInitialized = useCallback(() => {
+    if (pendingPhotoResolve.current) {
+      pendingPhotoResolve.current();
+      pendingPhotoResolve.current = null;
+    }
+  }, []);
+
+  // Take photo with camera reactivation if needed
+  // Check WebRTC service directly to see if it has the camera locked
+  const takePhotoWithReactivation = useCallback(async () => {
+    const hasActiveStream = webRTCService.getLocalStreamRef() !== null;
+
+    // If no active WebRTC stream, just take photo directly
+    if (!hasActiveStream) {
+      return takePhoto();
+    }
+
+    // WebRTC has the camera locked via getUserMedia
+    // Must pause WebRTC stream to release camera for vision-camera
+    console.log('[CAMERA] Pausing WebRTC stream for photo capture');
+
+    // Create a promise that resolves when camera is ready
+    const cameraReadyPromise = new Promise<void>((resolve) => {
+      pendingPhotoResolve.current = resolve;
+    });
+
+    // Stop WebRTC video track to release camera hardware
+    webRTCService.pauseLocalStream();
+
+    // Wait for Android to fully release camera hardware
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Activate vision-camera
+    setIsStreamingToRemote(false);
+
+    // Wait for camera to initialize (with timeout)
+    const timeoutPromise = new Promise<void>((resolve) => setTimeout(resolve, 2000));
+    await Promise.race([cameraReadyPromise, timeoutPromise]);
+
+    // Additional delay to ensure camera session is fully running
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Retry photo capture with exponential backoff
+    const maxRetries = 3;
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const result = await takePhoto();
+        // Success - reactivate streaming
+        setIsStreamingToRemote(true);
+        await webRTCService.resumeLocalStream(cameraState.facing);
+        console.log('[CAMERA] Photo captured, WebRTC stream resumed');
+        return result;
+      } catch (error) {
+        lastError = error;
+        console.log(`[CAMERA] Photo capture attempt ${attempt + 1} failed, retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 300 * Math.pow(2, attempt)));
+      }
+    }
+
+    // All retries failed - reactivate streaming and throw
+    setIsStreamingToRemote(true);
+    await webRTCService.resumeLocalStream(cameraState.facing);
+    throw lastError;
+  }, [takePhoto, cameraState.facing]);
+
   // Handle incoming commands from remote
   const handleCommand = useCallback(async (command: Command) => {
-    console.log('Received command:', command.type);
+    console.log('[CAMERA] Received command:', command.type);
 
     switch (command.type) {
       case 'TAKE_PHOTO':
         try {
-          await takePhoto();
+          await takePhotoWithReactivation();
           sendResponse({ type: 'PHOTO_TAKEN', success: true });
         } catch (error) {
           sendResponse({ type: 'PHOTO_TAKEN', success: false, error: String(error) });
@@ -84,6 +157,17 @@ export default function CameraScreen() {
 
       case 'START_RECORDING':
         try {
+          // Deactivate streaming to free camera for vision-camera recording
+          // Note: Remote preview will stop during recording
+          if (isStreamingToRemote) {
+            console.log('Deactivating streaming for video recording');
+            // Stop WebRTC video track to release camera hardware
+            webRTCService.pauseLocalStream();
+            await new Promise(resolve => setTimeout(resolve, 100));
+            setIsStreamingToRemote(false);
+            // Wait for camera to initialize
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
           await startRecording();
           sendResponse({ type: 'RECORDING_STARTED' });
         } catch (error) {
@@ -95,8 +179,20 @@ export default function CameraScreen() {
         try {
           await stopRecording();
           sendResponse({ type: 'RECORDING_STOPPED', success: true });
+          // Reactivate streaming after recording stops
+          if (isRemoteConnected) {
+            console.log('Reactivating streaming after recording');
+            setIsStreamingToRemote(true);
+            // Resume WebRTC stream
+            await webRTCService.resumeLocalStream(cameraState.facing);
+          }
         } catch (error) {
           sendResponse({ type: 'RECORDING_STOPPED', success: false, error: String(error) });
+          // Still try to reactivate streaming on error
+          if (isRemoteConnected) {
+            setIsStreamingToRemote(true);
+            await webRTCService.resumeLocalStream(cameraState.facing);
+          }
         }
         break;
 
@@ -119,11 +215,12 @@ export default function CameraScreen() {
         sendStateUpdate(cameraState, availableLenses);
         break;
     }
-  }, [takePhoto, startRecording, stopRecording, setZoom, updateState, switchCamera, cameraState, availableLenses]);
+  }, [takePhotoWithReactivation, startRecording, stopRecording, setZoom, updateState, switchCamera, cameraState, availableLenses, isStreamingToRemote, isRemoteConnected]);
 
   // WebRTC connection
   const {
     connectionState,
+    isDataChannelReady,
     createConnection,
     createOffer,
     setRemoteDescription,
@@ -235,19 +332,17 @@ export default function CameraScreen() {
   useEffect(() => {
     if (connectionState === 'connected') {
       setIsRemoteConnected(true);
-      // Send initial state to remote
-      sendStateUpdate(cameraState, availableLenses);
     } else if (connectionState === 'failed' || connectionState === 'disconnected') {
       setIsRemoteConnected(false);
     }
-  }, [connectionState, cameraState, availableLenses, sendStateUpdate]);
+  }, [connectionState]);
 
-  // Send state updates when camera state changes
+  // Send state updates when camera state changes and data channel is ready
   useEffect(() => {
-    if (isRemoteConnected) {
+    if (isRemoteConnected && isDataChannelReady) {
       sendStateUpdate(cameraState, availableLenses);
     }
-  }, [cameraState, availableLenses, isRemoteConnected, sendStateUpdate]);
+  }, [cameraState, availableLenses, isRemoteConnected, isDataChannelReady, sendStateUpdate]);
 
   // Navigate to remote screen
   const handleGoToRemote = () => {
@@ -325,6 +420,7 @@ export default function CameraScreen() {
         audio={true}
         zoom={cameraState.zoom}
         enableZoomGesture={true}
+        onInitialized={handleCameraInitialized}
       />
 
       {/* Camera controls */}
