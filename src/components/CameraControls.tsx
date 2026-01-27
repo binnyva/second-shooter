@@ -9,6 +9,7 @@ import {
   Easing,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { MaterialIcons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { CameraState, CaptureMode, LensInfo } from '../types';
 
 interface CameraControlsProps {
@@ -194,7 +195,7 @@ export function CameraControls({
               <Image source={{ uri: lastPhotoUri }} style={styles.thumbnailImage} />
             ) : (
               <View style={styles.thumbnailPlaceholder}>
-                <Text style={styles.thumbnailPlaceholderText}>📷</Text>
+                <MaterialIcons name="photo-library" size={24} color="rgba(255,255,255,0.5)" />
               </View>
             )}
           </TouchableOpacity>
@@ -231,24 +232,30 @@ export function CameraControls({
                   currentMode === 'remote' && styles.toggleIndicatorRight,
                 ]}
               />
-              <Text
+              <View
                 style={[
-                  styles.toggleText,
+                  styles.toggleIconContainer,
                   styles.toggleTextLeft,
-                  currentMode === 'camera' && styles.toggleTextActive,
                 ]}
               >
-                📷
-              </Text>
-              <Text
+                <MaterialIcons
+                  name="photo-camera"
+                  size={16}
+                  color={currentMode === 'camera' ? 'rgba(0,0,0,0.5)' : '#fff'}
+                />
+              </View>
+              <View
                 style={[
-                  styles.toggleText,
+                  styles.toggleIconContainer,
                   styles.toggleTextRight,
-                  currentMode === 'remote' && styles.toggleTextActive,
                 ]}
               >
-                📱
-              </Text>
+                <MaterialCommunityIcons
+                  name="remote"
+                  size={16}
+                  color={currentMode === 'remote' ? 'rgba(0,0,0,0.5)' : '#fff'}
+                />
+              </View>
             </View>
           </TouchableOpacity>
         </View>
@@ -261,7 +268,7 @@ export function CameraControls({
             onPress={onSettingsPress}
             disabled={disabled || !onSettingsPress}
           >
-            <Text style={styles.settingsButtonText}>⚙️</Text>
+            <Feather name="settings" size={22} color="#fff" />
           </TouchableOpacity>
 
           {/* Lens Selector */}
@@ -315,9 +322,11 @@ export function CameraControls({
               onPress={onQRPress}
               disabled={disabled || !onQRPress || isQRLoading}
             >
-              <Text style={styles.qrButtonText}>
-                {currentMode === 'camera' ? '⊞' : '📷'}
-              </Text>
+              {currentMode === 'camera' ? (
+                <MaterialCommunityIcons name="qrcode" size={24} color="#fff" />
+              ) : (
+                <MaterialCommunityIcons name="qrcode-scan" size={22} color="#fff" />
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -395,10 +404,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  thumbnailPlaceholderText: {
-    fontSize: 20,
-    opacity: 0.5,
-  },
   // Shutter Button
   shutterButton: {
     width: 80,
@@ -459,18 +464,16 @@ const styles = StyleSheet.create({
   toggleIndicatorRight: {
     left: 28,
   },
-  toggleText: {
-    fontSize: 14,
+  toggleIconContainer: {
     zIndex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   toggleTextLeft: {
     marginLeft: 4,
   },
   toggleTextRight: {
     marginRight: 4,
-  },
-  toggleTextActive: {
-    opacity: 0.3,
   },
   // Row 3: Bottom Row
   bottomRow: {
@@ -486,9 +489,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  settingsButtonText: {
-    fontSize: 20,
   },
   // Lens Selector
   lensSelectorContainer: {
@@ -562,9 +562,6 @@ const styles = StyleSheet.create({
   },
   qrButtonLoading: {
     opacity: 0.7,
-  },
-  qrButtonText: {
-    fontSize: 20,
   },
 });
 
