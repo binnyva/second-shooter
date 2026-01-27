@@ -135,6 +135,11 @@ export default function CameraScreen() {
   } = usePeerConnection({
     role: 'camera',
     onCommand: handleCommand,
+    onIceCandidate: async (candidate) => {
+      // Send camera's ICE candidates to Firebase for the remote to receive
+      console.log('Sending ICE candidate to signaling');
+      await addSignalingIceCandidate(candidate);
+    },
   });
 
   // Get camera devices - always get back camera for consistent lens detection
@@ -210,9 +215,6 @@ export default function CameraScreen() {
         setIsRemoteConnected(true);
         setShowQR(false);
       });
-
-      // Send ICE candidates to signaling
-      // Note: This is handled via onIceCandidate in usePeerConnection
 
       setShowQR(true);
     } catch (error) {

@@ -220,6 +220,17 @@ class WebRTCService {
       throw new Error('Peer connection not initialized');
     }
 
+    // Check signaling state - only set remote description if we're in the right state
+    const signalingState = (this.peerConnection as any).signalingState;
+    if (description.type === 'answer' && signalingState !== 'have-local-offer') {
+      console.log(`Ignoring answer - signaling state is '${signalingState}', expected 'have-local-offer'`);
+      return;
+    }
+    if (description.type === 'offer' && signalingState !== 'stable') {
+      console.log(`Ignoring offer - signaling state is '${signalingState}', expected 'stable'`);
+      return;
+    }
+
     const rtcDescription = new RTCSessionDescription({
       type: description.type as any,
       sdp: description.sdp || '',

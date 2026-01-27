@@ -98,6 +98,11 @@ export default function RemoteScreen() {
     role: 'remote',
     onResponse: handleResponse,
     onRemoteStream: handleRemoteStream,
+    onIceCandidate: async (candidate) => {
+      // Send remote's ICE candidates to Firebase for the camera to receive
+      console.log('Sending ICE candidate to signaling');
+      await addSignalingIceCandidate(candidate);
+    },
   });
 
   // Handle QR code scan
