@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   StyleSheet,
   TouchableOpacity,
   Text,
   Alert,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import {
@@ -13,6 +14,8 @@ import {
   useCameraPermission,
   useMicrophonePermission,
 } from 'react-native-vision-camera';
+import { RTCView } from 'react-native-webrtc';
+import ViewShot, { captureRef } from 'react-native-view-shot';
 import { CameraControls } from '../src/components/CameraControls';
 import { QRCodeDisplay } from '../src/components/QRCodeDisplay';
 import { useCamera } from '../src/hooks/useCamera';
@@ -58,6 +61,13 @@ export default function CameraScreen() {
   // Track if WebRTC is using the camera (to deactivate vision-camera)
   const [isStreamingToRemote, setIsStreamingToRemote] = useState(false);
 
+  // Local WebRTC stream for preview (separate from hook to avoid circular dependency)
+  const [webrtcLocalStream, setWebrtcLocalStream] = useState<any>(null);
+
+  // Frozen frame for smooth transitions during photo capture
+  const [frozenFrameUri, setFrozenFrameUri] = useState<string | null>(null);
+  const previewRef = useRef<ViewShot>(null);
+
 
   // Signaling
   const {
@@ -95,6 +105,20 @@ export default function CameraScreen() {
     // Must pause WebRTC stream to release camera for vision-camera
     console.log('[CAMERA] Pausing WebRTC stream for photo capture');
 
+    // Capture the current preview frame before pausing (for smooth transition)
+    try {
+      if (previewRef.current) {
+        const uri = await captureRef(previewRef, {
+          format: 'jpg',
+          quality: 0.8,
+        });
+        setFrozenFrameUri(uri);
+        console.log('[CAMERA] Captured freeze frame for transition');
+      }
+    } catch (captureError) {
+      console.warn('[CAMERA] Could not capture freeze frame:', captureError);
+    }
+
     // Create a promise that resolves when camera is ready
     const cameraReadyPromise = new Promise<void>((resolve) => {
       pendingPhotoResolve.current = resolve;
@@ -126,7 +150,10 @@ export default function CameraScreen() {
         // Success - reactivate streaming
         setIsStreamingToRemote(true);
         await webRTCService.resumeLocalStream(cameraState.facing);
+        setWebrtcLocalStream(webRTCService.getLocalStreamRef());
         console.log('[CAMERA] Photo captured, WebRTC stream resumed');
+        // Clear frozen frame after a brief delay to ensure smooth transition
+        setTimeout(() => setFrozenFrameUri(null), 200);
         return result;
       } catch (error) {
         lastError = error;
@@ -138,6 +165,9 @@ export default function CameraScreen() {
     // All retries failed - reactivate streaming and throw
     setIsStreamingToRemote(true);
     await webRTCService.resumeLocalStream(cameraState.facing);
+    setWebrtcLocalStream(webRTCService.getLocalStreamRef());
+    // Clear frozen frame
+    setFrozenFrameUri(null);
     throw lastError;
   }, [takePhoto, cameraState.facing]);
 
@@ -185,6 +215,7 @@ export default function CameraScreen() {
             setIsStreamingToRemote(true);
             // Resume WebRTC stream
             await webRTCService.resumeLocalStream(cameraState.facing);
+            setWebrtcLocalStream(webRTCService.getLocalStreamRef());
           }
         } catch (error) {
           sendResponse({ type: 'RECORDING_STOPPED', success: false, error: String(error) });
@@ -192,6 +223,7 @@ export default function CameraScreen() {
           if (isRemoteConnected) {
             setIsStreamingToRemote(true);
             await webRTCService.resumeLocalStream(cameraState.facing);
+            setWebrtcLocalStream(webRTCService.getLocalStreamRef());
           }
         }
         break;
@@ -293,7 +325,8 @@ export default function CameraScreen() {
       await createConnection();
 
       // Start local stream for WebRTC
-      await startLocalStream();
+      const stream = await startLocalStream();
+      setWebrtcLocalStream(stream);
 
       // Create and send offer
       const offer = await createOffer();
@@ -326,6 +359,7 @@ export default function CameraScreen() {
     cleanupSignaling();
     closeConnection();
     setIsStreamingToRemote(false);
+    setWebrtcLocalStream(null);
   };
 
   // Update remote connection state
@@ -409,19 +443,39 @@ export default function CameraScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Camera preview - deactivate when WebRTC is streaming */}
-      <Camera
-        ref={cameraRef}
-        style={StyleSheet.absoluteFill}
-        device={device}
-        isActive={!isStreamingToRemote}
-        photo={true}
-        video={true}
-        audio={true}
-        zoom={cameraState.zoom}
-        enableZoomGesture={true}
-        onInitialized={handleCameraInitialized}
-      />
+      {/* Camera preview - show RTCView when streaming, vision-camera otherwise */}
+      <ViewShot ref={previewRef} style={StyleSheet.absoluteFill}>
+        {isStreamingToRemote && webrtcLocalStream ? (
+          <RTCView
+            streamURL={webrtcLocalStream.toURL()}
+            style={StyleSheet.absoluteFill}
+            objectFit="cover"
+            mirror={cameraState.facing === 'front'}
+          />
+        ) : (
+          <Camera
+            ref={cameraRef}
+            style={StyleSheet.absoluteFill}
+            device={device}
+            isActive={!isStreamingToRemote}
+            photo={true}
+            video={true}
+            audio={true}
+            zoom={cameraState.zoom}
+            enableZoomGesture={true}
+            onInitialized={handleCameraInitialized}
+          />
+        )}
+      </ViewShot>
+
+      {/* Frozen frame overlay during photo capture transition */}
+      {frozenFrameUri && (
+        <Image
+          source={{ uri: frozenFrameUri }}
+          style={StyleSheet.absoluteFill}
+          resizeMode="cover"
+        />
+      )}
 
       {/* Camera controls */}
       <CameraControls
