@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   View,
   TouchableOpacity,
   StyleSheet,
   Text,
   Image,
+  Animated,
+  Easing,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraState, CaptureMode, LensInfo } from '../types';
@@ -28,6 +30,7 @@ interface CameraControlsProps {
   onLensSelect?: (zoom: number) => void;
   availableLenses?: LensInfo[];
   currentMode?: 'camera' | 'remote';
+  isQRLoading?: boolean;
 }
 
 export function CameraControls({
@@ -48,9 +51,34 @@ export function CameraControls({
   onLensSelect,
   availableLenses = [],
   currentMode = 'camera',
+  isQRLoading = false,
 }: CameraControlsProps) {
   const insets = useSafeAreaInsets();
   const { flash, captureMode, isRecording, zoom, facing } = cameraState;
+
+  // Animation for QR loading spinner
+  const spinValue = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (isQRLoading) {
+      spinValue.setValue(0);
+      Animated.loop(
+        Animated.timing(spinValue, {
+          toValue: 1,
+          duration: 1000,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        })
+      ).start();
+    } else {
+      spinValue.stopAnimation();
+    }
+  }, [isQRLoading, spinValue]);
+
+  const spin = spinValue.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
 
   const handleShutterPress = () => {
     if (disabled) return;
@@ -250,15 +278,25 @@ export function CameraControls({
           </View>
 
           {/* QR Code Button */}
-          <TouchableOpacity
-            style={styles.qrButton}
-            onPress={onQRPress}
-            disabled={disabled || !onQRPress}
-          >
-            <Text style={styles.qrButtonText}>
-              {currentMode === 'camera' ? '⊞' : '📷'}
-            </Text>
-          </TouchableOpacity>
+          <View style={styles.qrButtonContainer}>
+            {isQRLoading && (
+              <Animated.View
+                style={[
+                  styles.qrLoadingRing,
+                  { transform: [{ rotate: spin }] },
+                ]}
+              />
+            )}
+            <TouchableOpacity
+              style={[styles.qrButton, isQRLoading && styles.qrButtonLoading]}
+              onPress={onQRPress}
+              disabled={disabled || !onQRPress || isQRLoading}
+            >
+              <Text style={styles.qrButtonText}>
+                {currentMode === 'camera' ? '⊞' : '📷'}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     </View>
@@ -467,6 +505,22 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   // QR Button
+  qrButtonContainer: {
+    width: 52,
+    height: 52,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  qrLoadingRing: {
+    position: 'absolute',
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 3,
+    borderColor: 'transparent',
+    borderTopColor: '#fff',
+    borderRightColor: 'rgba(255, 255, 255, 0.3)',
+  },
   qrButton: {
     width: 44,
     height: 44,
@@ -474,6 +528,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  qrButtonLoading: {
+    opacity: 0.7,
   },
   qrButtonText: {
     fontSize: 20,

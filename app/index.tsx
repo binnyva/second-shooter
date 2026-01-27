@@ -53,6 +53,7 @@ export default function CameraScreen() {
   // QR code state
   const [showQR, setShowQR] = useState(false);
   const [isRemoteConnected, setIsRemoteConnected] = useState(false);
+  const [isQRLoading, setIsQRLoading] = useState(false);
 
   // Last photo and lenses state
   const [lastPhotoUri, setLastPhotoUri] = useState<string | undefined>();
@@ -310,6 +311,7 @@ export default function CameraScreen() {
 
   // Handle QR code display and session creation
   const handleShowQR = async () => {
+    setIsQRLoading(true);
     try {
       // Deactivate vision-camera before WebRTC takes over
       setIsStreamingToRemote(true);
@@ -347,10 +349,12 @@ export default function CameraScreen() {
       });
 
       setShowQR(true);
+      setIsQRLoading(false);
     } catch (error) {
       console.error('Error setting up remote connection:', error);
       Alert.alert('Error', 'Failed to create remote connection');
       setIsStreamingToRemote(false);
+      setIsQRLoading(false);
     }
   };
 
@@ -495,6 +499,7 @@ export default function CameraScreen() {
         onLensSelect={handleLensSelect}
         availableLenses={availableLenses}
         currentMode="camera"
+        isQRLoading={isQRLoading}
       />
 
       {/* Connection indicator */}
