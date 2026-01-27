@@ -36,6 +36,10 @@ class WebRTCService {
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
 
+  // Lock to prevent concurrent stream switching operations
+  private isSwitchingStream: boolean = false;
+  private pendingSwitch: { facingMode: 'front' | 'back'; zoom: number } | null = null;
+
   private onCommandCallback: CommandCallback | null = null;
   private onResponseCallback: ResponseCallback | null = null;
   private onRemoteStreamCallback: StreamCallback | null = null;
@@ -259,18 +263,60 @@ class WebRTCService {
   }
 
   // Get local media stream for camera
-  async getLocalStream(facingMode: 'front' | 'back' = 'back'): Promise<MediaStream> {
+  // zoom parameter helps select the appropriate physical lens (0.5 = ultra-wide, 1 = wide, 2+ = telephoto)
+  async getLocalStream(facingMode: 'front' | 'back' = 'back', zoom: number = 1): Promise<MediaStream> {
     const sourceInfos = await mediaDevices.enumerateDevices() as any[];
 
+    // Find all video devices matching the facing mode
+    const targetFacing = facingMode === 'front' ? 'front' : 'environment';
+    const matchingDevices = sourceInfos.filter(
+      (info: any) => info.kind === 'videoinput' && info.facing === targetFacing
+    );
+
     let videoSourceId: string | undefined;
-    for (const sourceInfo of sourceInfos) {
-      if (
-        sourceInfo.kind === 'videoinput' &&
-        sourceInfo.facing === (facingMode === 'front' ? 'front' : 'environment')
-      ) {
-        videoSourceId = sourceInfo.deviceId;
-        break;
+
+    if (facingMode === 'back' && matchingDevices.length > 1) {
+      // Multiple back cameras - try to select based on zoom level
+      const sortedDevices = [...matchingDevices].sort((a: any, b: any) =>
+        (a.label || '').localeCompare(b.label || '')
+      );
+
+      // Try to identify lenses by label patterns
+      const ultraWide = sortedDevices.find((d: any) =>
+        /ultra|wide.*angle|0\.5|0\.6/i.test(d.label || '')
+      );
+      const telephoto = sortedDevices.find((d: any) =>
+        /tele|zoom|2x|3x|5x/i.test(d.label || '')
+      );
+      const wide = sortedDevices.find((d: any) =>
+        !ultraWide?.deviceId?.includes(d.deviceId) &&
+        !telephoto?.deviceId?.includes(d.deviceId)
+      ) || sortedDevices[0];
+
+      // Select device based on zoom level
+      if (zoom < 0.8 && ultraWide) {
+        videoSourceId = ultraWide.deviceId;
+      } else if (zoom >= 1.8 && telephoto) {
+        videoSourceId = telephoto.deviceId;
+      } else if (wide) {
+        videoSourceId = wide.deviceId;
       }
+
+      // Fallback: if label-based detection fails, use index-based selection
+      if (!videoSourceId && sortedDevices.length >= 2) {
+        if (zoom < 0.8 && sortedDevices.length >= 2) {
+          videoSourceId = sortedDevices[1]?.deviceId;
+        } else if (zoom >= 1.8 && sortedDevices.length >= 3) {
+          videoSourceId = sortedDevices[2]?.deviceId;
+        } else {
+          videoSourceId = sortedDevices[0]?.deviceId;
+        }
+      }
+    }
+
+    // Default fallback - use first matching device
+    if (!videoSourceId && matchingDevices.length > 0) {
+      videoSourceId = matchingDevices[0].deviceId;
     }
 
     const stream = await mediaDevices.getUserMedia({
@@ -367,15 +413,16 @@ class WebRTCService {
   }
 
   // Resume local stream (gets new stream and replaces tracks)
-  async resumeLocalStream(facingMode: 'front' | 'back' = 'back'): Promise<void> {
+  // zoom parameter helps select the appropriate physical lens
+  async resumeLocalStream(facingMode: 'front' | 'back' = 'back', zoom: number = 1): Promise<void> {
     if (!this.peerConnection) {
       console.error('Peer connection not initialized for stream resume');
       return;
     }
 
     try {
-      // Get a new stream
-      const newStream = await this.getLocalStream(facingMode);
+      // Get a new stream with the appropriate lens
+      const newStream = await this.getLocalStream(facingMode, zoom);
 
       // Replace the tracks in the peer connection
       const senders = this.peerConnection.getSenders();
@@ -391,6 +438,61 @@ class WebRTCService {
       }
     } catch (error) {
       console.error('Error resuming local stream:', error);
+    }
+  }
+
+  // Switch to a different lens by replacing the video track
+  async switchLens(facingMode: 'front' | 'back', zoom: number): Promise<void> {
+    // If already switching, queue this request (only keep the latest)
+    if (this.isSwitchingStream) {
+      this.pendingSwitch = { facingMode, zoom };
+      return;
+    }
+
+    if (!this.peerConnection || !this.localStream) {
+      console.error('Peer connection or stream not initialized for lens switch');
+      return;
+    }
+
+    this.isSwitchingStream = true;
+
+    try {
+      // Stop ALL tracks in the current stream to fully release the camera
+      this.localStream.getTracks().forEach((track) => {
+        track.stop();
+      });
+
+      // Small delay to ensure camera is fully released on Android
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Get new stream with the desired lens
+      const newStream = await this.getLocalStream(facingMode, zoom);
+
+      // Replace both video and audio tracks in the peer connection
+      const senders = this.peerConnection.getSenders();
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      const newAudioTrack = newStream.getAudioTracks()[0];
+
+      for (const sender of senders) {
+        if (sender.track?.kind === 'video' && newVideoTrack) {
+          await sender.replaceTrack(newVideoTrack);
+        } else if (sender.track?.kind === 'audio' && newAudioTrack) {
+          await sender.replaceTrack(newAudioTrack);
+        }
+      }
+    } catch (error) {
+      console.error('Error switching lens:', error);
+    } finally {
+      this.isSwitchingStream = false;
+
+      // Process any pending switch request
+      if (this.pendingSwitch) {
+        const pending = this.pendingSwitch;
+        this.pendingSwitch = null;
+        setTimeout(() => {
+          this.switchLens(pending.facingMode, pending.zoom);
+        }, 50);
+      }
     }
   }
 
@@ -423,6 +525,10 @@ class WebRTCService {
     this.onConnectionStateCallback = null;
     this.onIceCandidateCallback = null;
     this.onDataChannelOpenCallback = null;
+
+    // Reset switching state
+    this.isSwitchingStream = false;
+    this.pendingSwitch = null;
   }
 }
 

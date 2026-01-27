@@ -6,9 +6,11 @@ import { ConnectionState } from '../types';
 interface RemotePreviewProps {
   stream: MediaStream | null;
   connectionState: ConnectionState;
+  facing?: 'front' | 'back';
+  videoNeedsRotation?: boolean;
 }
 
-export function RemotePreview({ stream, connectionState }: RemotePreviewProps) {
+export function RemotePreview({ stream, connectionState, facing = 'back', videoNeedsRotation = false }: RemotePreviewProps) {
   const getStatusMessage = (): string => {
     switch (connectionState) {
       case 'connecting':
@@ -28,12 +30,18 @@ export function RemotePreview({ stream, connectionState }: RemotePreviewProps) {
   return (
     <View style={styles.container}>
       {stream ? (
-        <RTCView
-          streamURL={stream.toURL()}
-          style={styles.video}
-          objectFit="cover"
-          mirror={false}
-        />
+        <View style={[
+          StyleSheet.absoluteFill,
+          videoNeedsRotation && { transform: [{ rotate: '180deg' }] }
+        ]}>
+          <RTCView
+            key={`rtc-${facing}-${videoNeedsRotation}`}
+            streamURL={stream.toURL()}
+            style={StyleSheet.absoluteFill}
+            objectFit="cover"
+            mirror={facing === 'front'}
+          />
+        </View>
       ) : (
         <View style={styles.placeholder}>
           {showLoading && (

@@ -110,9 +110,24 @@ export function CameraControls({
     // If on front camera, switch to back camera first
     if (facing === 'front') {
       onSwitchCamera();
+      // When switching from front to back, don't also send SET_ZOOM immediately
+      // as it causes race conditions. The camera will switch to back with zoom 1.
+      // Only send SET_ZOOM if the user wants a different zoom level.
+      if (lens.zoom === 1) {
+        return; // SWITCH_CAMERA already sets zoom to 1
+      }
+      // For other zoom levels, delay slightly to let the camera switch complete
+      setTimeout(() => {
+        if (onLensSelect) {
+          onLensSelect(lens.zoom);
+        } else {
+          onZoomChange(lens.zoom);
+        }
+      }, 500);
+      return;
     }
 
-    // Set zoom level
+    // Already on back camera, just set zoom level
     if (onLensSelect) {
       onLensSelect(lens.zoom);
     } else {

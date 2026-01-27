@@ -138,11 +138,12 @@ export function usePeerConnection({
   }, []);
 
   // Send state update (camera device)
-  const sendStateUpdate = useCallback((state: CameraState, lenses?: LensInfo[]): void => {
+  const sendStateUpdate = useCallback((state: CameraState, lenses?: LensInfo[], videoNeedsRotation?: boolean): void => {
     webRTCService.sendResponse({
       type: 'STATE_UPDATE',
       state,
       lenses,
+      videoNeedsRotation,
     });
   }, []);
 

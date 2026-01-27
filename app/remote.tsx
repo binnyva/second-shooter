@@ -29,6 +29,7 @@ export default function RemoteScreen() {
   const [showScanner, setShowScanner] = useState(true);
   const [remoteState, setRemoteState] = useState<CameraState>(DEFAULT_STATE);
   const [remoteLenses, setRemoteLenses] = useState<LensInfo[]>([]);
+  const [videoNeedsRotation, setVideoNeedsRotation] = useState(false);
 
   // Signaling
   const {
@@ -50,6 +51,9 @@ export default function RemoteScreen() {
         setRemoteState(response.state);
         if (response.lenses) {
           setRemoteLenses(response.lenses);
+        }
+        if (response.videoNeedsRotation !== undefined) {
+          setVideoNeedsRotation(response.videoNeedsRotation);
         }
         break;
 
@@ -255,6 +259,8 @@ export default function RemoteScreen() {
           <RemotePreview
             stream={remoteStream}
             connectionState={connectionState}
+            facing={remoteState.facing}
+            videoNeedsRotation={videoNeedsRotation}
           />
 
           {/* Camera controls */}

@@ -35,12 +35,15 @@ export function useCamera(initialState?: Partial<CameraState>) {
   }, [updateState]);
 
   // Toggle flash through modes
+  // Use functional update to avoid stale closure issues
   const toggleFlash = useCallback(() => {
     const modes: FlashMode[] = ['off', 'on', 'auto'];
-    const currentIndex = modes.indexOf(state.flash);
-    const nextIndex = (currentIndex + 1) % modes.length;
-    updateState({ flash: modes[nextIndex] });
-  }, [state.flash, updateState]);
+    setState((prev) => {
+      const currentIndex = modes.indexOf(prev.flash);
+      const nextIndex = (currentIndex + 1) % modes.length;
+      return { ...prev, flash: modes[nextIndex] };
+    });
+  }, []);
 
   // Set camera facing
   const setFacing = useCallback((facing: CameraFacing) => {
@@ -48,11 +51,13 @@ export function useCamera(initialState?: Partial<CameraState>) {
   }, [updateState]);
 
   // Switch camera between front and back
+  // Use functional update to avoid stale closure issues
   const switchCamera = useCallback(() => {
-    updateState({
-      facing: state.facing === 'back' ? 'front' : 'back',
-    });
-  }, [state.facing, updateState]);
+    setState((prev) => ({
+      ...prev,
+      facing: prev.facing === 'back' ? 'front' : 'back',
+    }));
+  }, []);
 
   // Set capture mode
   const setCaptureMode = useCallback((captureMode: CaptureMode) => {

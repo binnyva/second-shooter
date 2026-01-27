@@ -61,6 +61,14 @@ export default function CameraScreen() {
 
   // Track if WebRTC is using the camera (to deactivate vision-camera)
   const [isStreamingToRemote, setIsStreamingToRemote] = useState(false);
+  // Ref to track streaming state for use in callbacks (avoids stale closure issues)
+  const isStreamingRef = useRef(false);
+
+  // Track if video needs 180° rotation (Android bug when switching from front to back camera)
+  const [videoNeedsRotation, setVideoNeedsRotation] = useState(false);
+
+  // Ref to track current facing for use in callbacks (avoids stale closure issues)
+  const facingRef = useRef<'front' | 'back'>('back');
 
   // Local WebRTC stream for preview (separate from hook to avoid circular dependency)
   const [webrtcLocalStream, setWebrtcLocalStream] = useState<any>(null);
@@ -150,7 +158,7 @@ export default function CameraScreen() {
         const result = await takePhoto();
         // Success - reactivate streaming
         setIsStreamingToRemote(true);
-        await webRTCService.resumeLocalStream(cameraState.facing);
+        await webRTCService.resumeLocalStream(cameraState.facing, cameraState.zoom);
         setWebrtcLocalStream(webRTCService.getLocalStreamRef());
         console.log('[CAMERA] Photo captured, WebRTC stream resumed');
         // Clear frozen frame after a brief delay to ensure smooth transition
@@ -165,7 +173,7 @@ export default function CameraScreen() {
 
     // All retries failed - reactivate streaming and throw
     setIsStreamingToRemote(true);
-    await webRTCService.resumeLocalStream(cameraState.facing);
+    await webRTCService.resumeLocalStream(cameraState.facing, cameraState.zoom);
     setWebrtcLocalStream(webRTCService.getLocalStreamRef());
     // Clear frozen frame
     setFrozenFrameUri(null);
@@ -215,7 +223,7 @@ export default function CameraScreen() {
             console.log('Reactivating streaming after recording');
             setIsStreamingToRemote(true);
             // Resume WebRTC stream
-            await webRTCService.resumeLocalStream(cameraState.facing);
+            await webRTCService.resumeLocalStream(cameraState.facing, cameraState.zoom);
             setWebrtcLocalStream(webRTCService.getLocalStreamRef());
           }
         } catch (error) {
@@ -223,7 +231,7 @@ export default function CameraScreen() {
           // Still try to reactivate streaming on error
           if (isRemoteConnected) {
             setIsStreamingToRemote(true);
-            await webRTCService.resumeLocalStream(cameraState.facing);
+            await webRTCService.resumeLocalStream(cameraState.facing, cameraState.zoom);
             setWebrtcLocalStream(webRTCService.getLocalStreamRef());
           }
         }
@@ -231,24 +239,42 @@ export default function CameraScreen() {
 
       case 'SET_ZOOM':
         setZoom(command.level);
-        sendStateUpdate(cameraState, availableLenses);
+        // Switch WebRTC stream to the appropriate lens if streaming
+        if (isStreamingRef.current) {
+          await webRTCService.switchLens(facingRef.current, command.level);
+          setWebrtcLocalStream(webRTCService.getLocalStreamRef());
+        }
         break;
 
       case 'SET_FLASH':
         updateState({ flash: command.mode });
-        sendStateUpdate(cameraState, availableLenses);
+        // Note: STATE_UPDATE is sent automatically via useEffect when cameraState changes
         break;
 
       case 'SWITCH_CAMERA':
+        // Use ref to get current facing (avoids stale closure)
+        const currentFacing = facingRef.current;
+        const newFacing = currentFacing === 'back' ? 'front' : 'back';
         switchCamera();
-        sendStateUpdate(cameraState, availableLenses);
+        // Switch WebRTC stream to the new camera if streaming
+        if (isStreamingRef.current) {
+          // Track if we're switching from front to back (causes Android rotation bug)
+          const switchingFromFrontToBack = currentFacing === 'front' && newFacing === 'back';
+          if (switchingFromFrontToBack) {
+            setVideoNeedsRotation(true);
+          } else if (newFacing === 'front') {
+            setVideoNeedsRotation(false);
+          }
+          await webRTCService.switchLens(newFacing, cameraState.zoom);
+          setWebrtcLocalStream(webRTCService.getLocalStreamRef());
+        }
         break;
 
       case 'GET_STATE':
         sendStateUpdate(cameraState, availableLenses);
         break;
     }
-  }, [takePhotoWithReactivation, startRecording, stopRecording, setZoom, updateState, switchCamera, cameraState, availableLenses, isStreamingToRemote, isRemoteConnected]);
+  }, [takePhotoWithReactivation, startRecording, stopRecording, setZoom, updateState, switchCamera, cameraState, availableLenses, isRemoteConnected]);
 
   // WebRTC connection
   const {
@@ -389,12 +415,22 @@ export default function CameraScreen() {
     }
   }, [connectionState]);
 
+  // Keep streaming ref in sync with state (for use in callbacks)
+  useEffect(() => {
+    isStreamingRef.current = isStreamingToRemote;
+  }, [isStreamingToRemote]);
+
+  // Keep facing ref in sync with state (for use in callbacks)
+  useEffect(() => {
+    facingRef.current = cameraState.facing;
+  }, [cameraState.facing]);
+
   // Send state updates when camera state changes and data channel is ready
   useEffect(() => {
     if (isRemoteConnected && isDataChannelReady) {
-      sendStateUpdate(cameraState, availableLenses);
+      sendStateUpdate(cameraState, availableLenses, videoNeedsRotation);
     }
-  }, [cameraState, availableLenses, isRemoteConnected, isDataChannelReady, sendStateUpdate]);
+  }, [cameraState, availableLenses, videoNeedsRotation, isRemoteConnected, isDataChannelReady, sendStateUpdate]);
 
   // Navigate to remote screen
   const handleGoToRemote = () => {
@@ -464,12 +500,17 @@ export default function CameraScreen() {
       {/* Camera preview - show RTCView when streaming, vision-camera otherwise */}
       <ViewShot ref={previewRef} style={StyleSheet.absoluteFill}>
         {isStreamingToRemote && webrtcLocalStream ? (
-          <RTCView
-            streamURL={webrtcLocalStream.toURL()}
-            style={StyleSheet.absoluteFill}
-            objectFit="cover"
-            mirror={cameraState.facing === 'front'}
-          />
+          <View style={[
+            StyleSheet.absoluteFill,
+            videoNeedsRotation && { transform: [{ rotate: '180deg' }] }
+          ]}>
+            <RTCView
+              streamURL={webrtcLocalStream.toURL()}
+              style={StyleSheet.absoluteFill}
+              objectFit="cover"
+              mirror={cameraState.facing === 'front'}
+            />
+          </View>
         ) : (
           <Camera
             ref={cameraRef}
