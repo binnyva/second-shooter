@@ -202,7 +202,7 @@ class WebRTCService {
     }
 
     const offer = await this.peerConnection.createOffer({
-      offerToReceiveAudio: true,
+      offerToReceiveAudio: false,
       offerToReceiveVideo: true,
     } as any);
 
@@ -320,7 +320,7 @@ class WebRTCService {
     }
 
     const stream = await mediaDevices.getUserMedia({
-      audio: true,
+      audio: false,
       video: {
         width: { ideal: 1920 },
         height: { ideal: 1080 },
@@ -340,7 +340,7 @@ class WebRTCService {
       throw new Error('Peer connection not initialized');
     }
 
-    stream.getTracks().forEach((track) => {
+    stream.getVideoTracks().forEach((track) => {
       this.peerConnection!.addTrack(track, stream);
     });
   }
@@ -424,16 +424,13 @@ class WebRTCService {
       // Get a new stream with the appropriate lens
       const newStream = await this.getLocalStream(facingMode, zoom);
 
-      // Replace the tracks in the peer connection
+      // Replace the video track in the peer connection
       const senders = this.peerConnection.getSenders();
       const videoTrack = newStream.getVideoTracks()[0];
-      const audioTrack = newStream.getAudioTracks()[0];
 
       for (const sender of senders) {
         if (sender.track?.kind === 'video' && videoTrack) {
           await sender.replaceTrack(videoTrack);
-        } else if (sender.track?.kind === 'audio' && audioTrack) {
-          await sender.replaceTrack(audioTrack);
         }
       }
     } catch (error) {
@@ -468,16 +465,13 @@ class WebRTCService {
       // Get new stream with the desired lens
       const newStream = await this.getLocalStream(facingMode, zoom);
 
-      // Replace both video and audio tracks in the peer connection
+      // Replace video track in the peer connection
       const senders = this.peerConnection.getSenders();
       const newVideoTrack = newStream.getVideoTracks()[0];
-      const newAudioTrack = newStream.getAudioTracks()[0];
 
       for (const sender of senders) {
         if (sender.track?.kind === 'video' && newVideoTrack) {
           await sender.replaceTrack(newVideoTrack);
-        } else if (sender.track?.kind === 'audio' && newAudioTrack) {
-          await sender.replaceTrack(newAudioTrack);
         }
       }
     } catch (error) {
