@@ -26,7 +26,7 @@ interface UsePeerConnectionReturn {
   addIceCandidate: (candidate: IceCandidate) => Promise<void>;
   sendCommand: (command: Command) => void;
   sendResponse: (response: Response) => void;
-  sendStateUpdate: (state: CameraState, lenses?: LensInfo[]) => void;
+  sendStateUpdate: (state: CameraState, lenses?: LensInfo[], videoNeedsRotation?: boolean, previewZoomLimited?: boolean) => void;
   startLocalStream: () => Promise<MediaStream>;
   pauseLocalStream: () => void;
   resumeLocalStream: (facingMode?: 'front' | 'back') => Promise<void>;
@@ -138,12 +138,13 @@ export function usePeerConnection({
   }, []);
 
   // Send state update (camera device)
-  const sendStateUpdate = useCallback((state: CameraState, lenses?: LensInfo[], videoNeedsRotation?: boolean): void => {
+  const sendStateUpdate = useCallback((state: CameraState, lenses?: LensInfo[], videoNeedsRotation?: boolean, previewZoomLimited?: boolean): void => {
     webRTCService.sendResponse({
       type: 'STATE_UPDATE',
       state,
       lenses,
       videoNeedsRotation,
+      previewZoomLimited,
     });
   }, []);
 

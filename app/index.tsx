@@ -240,6 +240,8 @@ export default function CameraScreen() {
       case 'SET_ZOOM':
         setZoom(command.level);
         // Switch WebRTC stream to the appropriate lens if streaming
+        // Note: On most Android devices, WebRTC only sees one camera, so zoom
+        // affects the capture but not the live preview
         if (isStreamingRef.current) {
           await webRTCService.switchLens(facingRef.current, command.level);
           setWebrtcLocalStream(webRTCService.getLocalStreamRef());
@@ -271,7 +273,8 @@ export default function CameraScreen() {
         break;
 
       case 'GET_STATE':
-        sendStateUpdate(cameraState, availableLenses);
+        // Preview zoom is limited when streaming (WebRTC doesn't support zoom on Android)
+        sendStateUpdate(cameraState, availableLenses, videoNeedsRotation, isStreamingRef.current);
         break;
     }
   }, [takePhotoWithReactivation, startRecording, stopRecording, setZoom, updateState, switchCamera, cameraState, availableLenses, isRemoteConnected]);
@@ -329,6 +332,17 @@ export default function CameraScreen() {
     };
     requestPermissions();
   }, [hasCameraPermission, hasMicPermission, requestCameraPermission, requestMicPermission]);
+
+  // Log all available camera devices for debugging
+  useEffect(() => {
+    const allDevices = Camera.getAvailableCameraDevices();
+    console.log('[CameraDebug] Total devices found:', allDevices.length);
+    allDevices.forEach((d, idx) => {
+      console.log(`[CameraDebug] Device ${idx}: id=${d.id} position=${d.position} name=${d.name}`);
+      console.log(`[CameraDebug]   physicalDevices:`, d.physicalDevices);
+      console.log(`[CameraDebug]   minZoom=${d.minZoom} maxZoom=${d.maxZoom} neutralZoom=${d.neutralZoom}`);
+    });
+  }, []);
 
   // Detect available lenses - always use backDevice for consistent lens list
   useEffect(() => {
@@ -428,9 +442,10 @@ export default function CameraScreen() {
   // Send state updates when camera state changes and data channel is ready
   useEffect(() => {
     if (isRemoteConnected && isDataChannelReady) {
-      sendStateUpdate(cameraState, availableLenses, videoNeedsRotation);
+      // Preview zoom is limited when streaming (WebRTC doesn't support zoom on Android)
+      sendStateUpdate(cameraState, availableLenses, videoNeedsRotation, isStreamingToRemote);
     }
-  }, [cameraState, availableLenses, videoNeedsRotation, isRemoteConnected, isDataChannelReady, sendStateUpdate]);
+  }, [cameraState, availableLenses, videoNeedsRotation, isRemoteConnected, isDataChannelReady, isStreamingToRemote, sendStateUpdate]);
 
   // Navigate to remote screen
   const handleGoToRemote = () => {

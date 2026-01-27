@@ -37,7 +37,7 @@ export type Response =
   | { type: 'PHOTO_TAKEN'; success: boolean; error?: string }
   | { type: 'RECORDING_STARTED' }
   | { type: 'RECORDING_STOPPED'; success: boolean; error?: string }
-  | { type: 'STATE_UPDATE'; state: CameraState; lenses?: LensInfo[]; videoNeedsRotation?: boolean }
+  | { type: 'STATE_UPDATE'; state: CameraState; lenses?: LensInfo[]; videoNeedsRotation?: boolean; previewZoomLimited?: boolean }
   | { type: 'ERROR'; message: string };
 
 // WebRTC connection states

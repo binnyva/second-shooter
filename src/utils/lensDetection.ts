@@ -41,9 +41,11 @@ export function detectLenses(
   const maxZoom = device.maxZoom ?? 10;
   const neutralZoom = device.neutralZoom ?? 1;
 
-  console.log('[LensDetection] Device:', device.name);
+  console.log('[LensDetection] Device:', device.id, '(' + device.position.toUpperCase() + ')', device.name);
   console.log('[LensDetection] Physical devices:', physicalDevices);
   console.log('[LensDetection] Zoom range:', minZoom, '-', maxZoom, 'neutral:', neutralZoom);
+  console.log('[LensDetection] supportsPhotoAndVideo:', device.supportsPhotoAndVideo);
+  console.log('[LensDetection] hasFlash:', device.hasFlash, 'hasTorch:', device.hasTorch);
 
   // Build lens list based on physical devices
   const hasUltraWide = physicalDevices.includes('ultra-wide-angle-camera');

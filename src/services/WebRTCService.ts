@@ -288,29 +288,35 @@ class WebRTCService {
       const telephoto = sortedDevices.find((d: any) =>
         /tele|zoom|2x|3x|5x/i.test(d.label || '')
       );
+      // Find main/wide camera - exclude ultra-wide and telephoto
       const wide = sortedDevices.find((d: any) =>
-        !ultraWide?.deviceId?.includes(d.deviceId) &&
-        !telephoto?.deviceId?.includes(d.deviceId)
+        d.deviceId !== ultraWide?.deviceId &&
+        d.deviceId !== telephoto?.deviceId
       ) || sortedDevices[0];
 
       // Select device based on zoom level
-      if (zoom < 0.8 && ultraWide) {
-        videoSourceId = ultraWide.deviceId;
-      } else if (zoom >= 1.8 && telephoto) {
-        videoSourceId = telephoto.deviceId;
-      } else if (wide) {
-        videoSourceId = wide.deviceId;
-      }
-
-      // Fallback: if label-based detection fails, use index-based selection
-      if (!videoSourceId && sortedDevices.length >= 2) {
-        if (zoom < 0.8 && sortedDevices.length >= 2) {
+      if (zoom < 0.8) {
+        // Ultra-wide zoom range
+        if (ultraWide) {
+          videoSourceId = ultraWide.deviceId;
+        } else if (sortedDevices.length >= 2) {
+          // Fallback: ultra-wide often at index 1
           videoSourceId = sortedDevices[1]?.deviceId;
-        } else if (zoom >= 1.8 && sortedDevices.length >= 3) {
+        }
+      } else if (zoom >= 1.8) {
+        // Telephoto zoom range
+        if (telephoto) {
+          videoSourceId = telephoto.deviceId;
+        } else if (sortedDevices.length >= 3) {
+          // Fallback: telephoto often at index 2
           videoSourceId = sortedDevices[2]?.deviceId;
         } else {
-          videoSourceId = sortedDevices[0]?.deviceId;
+          // Device doesn't have 3 cameras, use main camera
+          videoSourceId = wide?.deviceId || sortedDevices[0]?.deviceId;
         }
+      } else {
+        // Normal zoom range (0.8 - 1.8) - use main wide camera
+        videoSourceId = wide?.deviceId || sortedDevices[0]?.deviceId;
       }
     }
 
@@ -319,7 +325,7 @@ class WebRTCService {
       videoSourceId = matchingDevices[0].deviceId;
     }
 
-    const stream = await mediaDevices.getUserMedia({
+    const constraints: any = {
       audio: false,
       video: {
         width: { ideal: 1920 },
@@ -328,8 +334,14 @@ class WebRTCService {
         facingMode: facingMode === 'front' ? 'user' : 'environment',
         ...(videoSourceId ? { deviceId: videoSourceId } : {}),
       },
-    });
+    };
 
+    // Try to request zoom if supported (note: not supported in react-native-webrtc)
+    if (zoom !== 1) {
+      constraints.video.advanced = [{ zoom: zoom }];
+    }
+
+    const stream = await mediaDevices.getUserMedia(constraints);
     this.localStream = stream as MediaStream;
     return this.localStream;
   }
@@ -454,7 +466,34 @@ class WebRTCService {
     this.isSwitchingStream = true;
 
     try {
-      // Stop ALL tracks in the current stream to fully release the camera
+      // First, try to apply zoom constraint to existing track
+      // Note: This is not supported in react-native-webrtc on Android,
+      // but we try anyway in case future versions add support
+      const videoTrack = this.localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        try {
+          const capabilities = (videoTrack as any).getCapabilities?.();
+          if (capabilities?.zoom) {
+            const clampedZoom = Math.max(capabilities.zoom.min, Math.min(capabilities.zoom.max, zoom));
+            await videoTrack.applyConstraints({
+              advanced: [{ zoom: clampedZoom } as any]
+            });
+            this.isSwitchingStream = false;
+            if (this.pendingSwitch) {
+              const pending = this.pendingSwitch;
+              this.pendingSwitch = null;
+              setTimeout(() => {
+                this.switchLens(pending.facingMode, pending.zoom);
+              }, 50);
+            }
+            return;
+          }
+        } catch {
+          // Zoom constraints not supported, fall through to camera switch
+        }
+      }
+
+      // Fallback: Stop ALL tracks in the current stream to fully release the camera
       this.localStream.getTracks().forEach((track) => {
         track.stop();
       });

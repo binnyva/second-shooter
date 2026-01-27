@@ -31,6 +31,8 @@ interface CameraControlsProps {
   availableLenses?: LensInfo[];
   currentMode?: 'camera' | 'remote';
   isQRLoading?: boolean;
+  // Indicates preview zoom is limited (zoom affects capture, not preview)
+  previewZoomLimited?: boolean;
 }
 
 export function CameraControls({
@@ -52,6 +54,7 @@ export function CameraControls({
   availableLenses = [],
   currentMode = 'camera',
   isQRLoading = false,
+  previewZoomLimited = false,
 }: CameraControlsProps) {
   const insets = useSafeAreaInsets();
   const { flash, captureMode, isRecording, zoom, facing } = cameraState;
@@ -262,34 +265,39 @@ export function CameraControls({
           </TouchableOpacity>
 
           {/* Lens Selector */}
-          <View style={styles.lensSelector}>
-            {availableLenses.length > 0 ? (
-              availableLenses.map((lens) => (
-                <TouchableOpacity
-                  key={lens.id}
-                  style={[
-                    styles.lensButton,
-                    lens.isActive && styles.lensButtonActive,
-                  ]}
-                  onPress={() => handleLensPress(lens)}
-                  disabled={disabled}
-                >
-                  <Text
-                    style={[
-                      styles.lensButtonText,
-                      lens.isActive && styles.lensButtonTextActive,
-                    ]}
-                  >
-                    {lens.label}
-                  </Text>
-                </TouchableOpacity>
-              ))
-            ) : (
-              // Fallback: show current zoom
-              <View style={styles.zoomDisplay}>
-                <Text style={styles.zoomDisplayText}>{zoom.toFixed(1)}x</Text>
-              </View>
+          <View style={styles.lensSelectorContainer}>
+            {previewZoomLimited && zoom !== 1 && (
+              <Text style={styles.previewZoomNote}>Preview at 1x, capture at {zoom}x</Text>
             )}
+            <View style={styles.lensSelector}>
+              {availableLenses.length > 0 ? (
+                availableLenses.map((lens) => (
+                  <TouchableOpacity
+                    key={lens.id}
+                    style={[
+                      styles.lensButton,
+                      lens.isActive && styles.lensButtonActive,
+                    ]}
+                    onPress={() => handleLensPress(lens)}
+                    disabled={disabled}
+                  >
+                    <Text
+                      style={[
+                        styles.lensButtonText,
+                        lens.isActive && styles.lensButtonTextActive,
+                      ]}
+                    >
+                      {lens.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))
+              ) : (
+                // Fallback: show current zoom
+                <View style={styles.zoomDisplay}>
+                  <Text style={styles.zoomDisplayText}>{zoom.toFixed(1)}x</Text>
+                </View>
+              )}
+            </View>
           </View>
 
           {/* QR Code Button */}
@@ -483,6 +491,14 @@ const styles = StyleSheet.create({
     fontSize: 20,
   },
   // Lens Selector
+  lensSelectorContainer: {
+    alignItems: 'center',
+  },
+  previewZoomNote: {
+    fontSize: 10,
+    color: 'rgba(255, 204, 0, 0.9)',
+    marginBottom: 4,
+  },
   lensSelector: {
     flexDirection: 'row',
     alignItems: 'center',

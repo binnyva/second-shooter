@@ -30,6 +30,7 @@ export default function RemoteScreen() {
   const [remoteState, setRemoteState] = useState<CameraState>(DEFAULT_STATE);
   const [remoteLenses, setRemoteLenses] = useState<LensInfo[]>([]);
   const [videoNeedsRotation, setVideoNeedsRotation] = useState(false);
+  const [previewZoomLimited, setPreviewZoomLimited] = useState(false);
 
   // Signaling
   const {
@@ -54,6 +55,9 @@ export default function RemoteScreen() {
         }
         if (response.videoNeedsRotation !== undefined) {
           setVideoNeedsRotation(response.videoNeedsRotation);
+        }
+        if (response.previewZoomLimited !== undefined) {
+          setPreviewZoomLimited(response.previewZoomLimited);
         }
         break;
 
@@ -280,6 +284,7 @@ export default function RemoteScreen() {
             onLensSelect={handleLensSelect}
             availableLenses={remoteLenses}
             currentMode="remote"
+            previewZoomLimited={previewZoomLimited}
           />
 
           {/* Session info */}
