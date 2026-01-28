@@ -44,13 +44,18 @@ export function detectLenses(
   console.log('[LensDetection] Device:', device.id, '(' + device.position.toUpperCase() + ')', device.name);
   console.log('[LensDetection] Physical devices:', physicalDevices);
   console.log('[LensDetection] Zoom range:', minZoom, '-', maxZoom, 'neutral:', neutralZoom);
-  console.log('[LensDetection] supportsPhotoAndVideo:', device.supportsPhotoAndVideo);
   console.log('[LensDetection] hasFlash:', device.hasFlash, 'hasTorch:', device.hasTorch);
 
   // Build lens list based on physical devices
   const hasUltraWide = physicalDevices.includes('ultra-wide-angle-camera');
   const hasWide = physicalDevices.includes('wide-angle-camera');
-  const hasTelephoto = physicalDevices.includes('telephoto-camera');
+
+  // Count telephoto cameras - devices like Samsung S23 Ultra have multiple
+  const telephotoCount = physicalDevices.filter(
+    (d) => d === 'telephoto-camera'
+  ).length;
+
+  console.log('[LensDetection] Telephoto camera count:', telephotoCount);
 
   // Ultra-wide lens (typically 0.5x or 0.6x)
   if (hasUltraWide && minZoom < 1) {
@@ -72,16 +77,16 @@ export function detectLenses(
     isActive: !isFrontCamera && isZoomActive(currentZoom, 1),
   });
 
-  // Telephoto lens - detect the actual zoom factor
-  if (hasTelephoto) {
-    // The telephoto zoom is typically maxZoom for the optical range,
-    // or we can estimate from common configurations
-    const telephotoZoom = detectTelephotoZoom(device);
-    lenses.push({
-      id: 'telephoto',
-      label: formatZoomLabel(telephotoZoom),
-      zoom: telephotoZoom,
-      isActive: !isFrontCamera && isZoomActive(currentZoom, telephotoZoom),
+  // Telephoto lenses - detect all available zoom factors
+  if (telephotoCount > 0) {
+    const telephotoZooms = detectTelephotoZooms(device, telephotoCount);
+    telephotoZooms.forEach((zoom, index) => {
+      lenses.push({
+        id: `telephoto-${index + 1}`,
+        label: formatZoomLabel(zoom),
+        zoom: zoom,
+        isActive: !isFrontCamera && isZoomActive(currentZoom, zoom),
+      });
     });
   } else if (maxZoom >= 2) {
     // No dedicated telephoto, but device supports digital zoom
@@ -121,26 +126,49 @@ export function detectLenses(
 }
 
 /**
- * Attempts to detect the telephoto zoom factor from device characteristics.
- * Modern phones typically have 2x, 3x, or 5x telephoto lenses.
+ * Attempts to detect the telephoto zoom factors from device characteristics.
+ * Handles devices with multiple telephoto cameras (like Samsung S23 Ultra with 3x and 10x).
  */
-function detectTelephotoZoom(device: CameraDevice): number {
+function detectTelephotoZooms(device: CameraDevice, telephotoCount: number): number[] {
   const maxZoom = device.maxZoom ?? 10;
-  const minZoom = device.minZoom ?? 1;
 
-  // Common telephoto configurations:
-  // - 2x telephoto: maxZoom often around 8-10x (4-5x digital on top of 2x optical)
+  // Common telephoto configurations based on maxZoom and telephoto count:
+  // Single telephoto:
+  // - 2x telephoto: maxZoom often around 8-10x
   // - 3x telephoto: maxZoom often around 15-30x
   // - 5x telephoto: maxZoom often around 50-100x
+  //
+  // Dual telephoto (Samsung S21 Ultra, S22 Ultra, S23 Ultra, S24 Ultra):
+  // - 3x + 10x: maxZoom typically 100x (10x digital on 10x optical)
+  // - 3x + 5x: maxZoom typically 50x
+  //
+  // Triple telephoto (some Sony Xperia):
+  // - 2.5x + 4x + 10x configurations exist
 
-  // Heuristic: the optical telephoto is usually where the device
-  // can maintain good quality. We'll estimate based on maxZoom.
+  if (telephotoCount >= 2) {
+    // Device has multiple telephoto cameras
+    if (maxZoom >= 80) {
+      // Samsung S23 Ultra / S24 Ultra style: 3x + 10x
+      return [3, 10];
+    } else if (maxZoom >= 40) {
+      // 3x + 5x configuration
+      return [3, 5];
+    } else if (maxZoom >= 20) {
+      // 2x + 3x or similar
+      return [2, 3];
+    } else {
+      // Unknown dual telephoto, estimate based on maxZoom
+      return [2, Math.min(5, Math.floor(maxZoom / 2))];
+    }
+  }
+
+  // Single telephoto camera
   if (maxZoom >= 50) {
-    return 5; // 5x telephoto (like Samsung S21 Ultra, Pixel 7 Pro)
+    return [5]; // 5x telephoto (like Samsung S21 Ultra single, Pixel 7 Pro)
   } else if (maxZoom >= 15) {
-    return 3; // 3x telephoto (like iPhone 13 Pro, Pixel 6 Pro)
+    return [3]; // 3x telephoto (like iPhone 13 Pro, Pixel 6 Pro)
   } else {
-    return 2; // 2x telephoto (most common)
+    return [2]; // 2x telephoto (most common)
   }
 }
 
@@ -154,9 +182,8 @@ function getDefaultLenses(facing: CameraFacing, currentZoom: number): LensInfo[]
     { id: 'selfie', label: 'S', zoom: 1, isActive: isFrontCamera },
     { id: 'ultra-wide', label: '.5', zoom: 0.5, isActive: !isFrontCamera && isZoomActive(currentZoom, 0.5) },
     { id: 'wide', label: '1', zoom: 1, isActive: !isFrontCamera && isZoomActive(currentZoom, 1) },
-    { id: 'telephoto-2x', label: '2', zoom: 2, isActive: !isFrontCamera && isZoomActive(currentZoom, 2) },
     { id: 'telephoto-3x', label: '3', zoom: 3, isActive: !isFrontCamera && isZoomActive(currentZoom, 3) },
-    { id: 'telephoto-5x', label: '5', zoom: 5, isActive: !isFrontCamera && isZoomActive(currentZoom, 5) },
+    { id: 'telephoto-10x', label: '10', zoom: 10, isActive: !isFrontCamera && isZoomActive(currentZoom, 10) },
   ];
 }
 
