@@ -8,6 +8,7 @@ import {
   Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
 import {
   Camera,
   useCameraDevice,
@@ -29,6 +30,7 @@ import { Command, CameraState, LensInfo } from '../src/types';
 
 export default function CameraScreen() {
   const router = useRouter();
+  const isFocused = useIsFocused();
 
   // Permissions
   const { hasPermission: hasCameraPermission, requestPermission: requestCameraPermission } =
@@ -61,6 +63,8 @@ export default function CameraScreen() {
 
   // Track if WebRTC is using the camera (to deactivate vision-camera)
   const [isStreamingToRemote, setIsStreamingToRemote] = useState(false);
+  // Key to force Camera remount when screen regains focus (fixes vision-camera not restarting)
+  const [cameraKey, setCameraKey] = useState(0);
   // Ref to track streaming state for use in callbacks (avoids stale closure issues)
   const isStreamingRef = useRef(false);
 
@@ -319,6 +323,15 @@ export default function CameraScreen() {
     ],
   });
 
+  // Force camera remount when screen regains focus (fixes vision-camera not restarting)
+  const wasFocusedRef = useRef(isFocused);
+  useEffect(() => {
+    if (isFocused && !wasFocusedRef.current) {
+      setCameraKey(prev => prev + 1);
+    }
+    wasFocusedRef.current = isFocused;
+  }, [isFocused]);
+
   // Request permissions on mount
   useEffect(() => {
     const requestPermissions = async () => {
@@ -528,10 +541,11 @@ export default function CameraScreen() {
           </View>
         ) : (
           <Camera
+            key={`camera-${cameraKey}`}
             ref={cameraRef}
             style={StyleSheet.absoluteFill}
             device={device}
-            isActive={!isStreamingToRemote}
+            isActive={isFocused && !isStreamingToRemote}
             photo={true}
             video={true}
             audio={true}
