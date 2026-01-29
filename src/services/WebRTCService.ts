@@ -475,8 +475,9 @@ class WebRTCService {
           const capabilities = (videoTrack as any).getCapabilities?.();
           if (capabilities?.zoom) {
             const clampedZoom = Math.max(capabilities.zoom.min, Math.min(capabilities.zoom.max, zoom));
-            await videoTrack.applyConstraints({
-              advanced: [{ zoom: clampedZoom } as any]
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await (videoTrack as any).applyConstraints({
+              advanced: [{ zoom: clampedZoom }]
             });
             this.isSwitchingStream = false;
             if (this.pendingSwitch) {
