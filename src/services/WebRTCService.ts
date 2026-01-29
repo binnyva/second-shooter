@@ -7,7 +7,7 @@ import {
   MediaStreamTrack,
 } from 'react-native-webrtc';
 import { RTC_CONFIG, DATA_CHANNEL_CONFIG, COMMAND_CHANNEL_NAME } from '../config/webrtc';
-import { Command, Response, IceCandidate, ConnectionState } from '../types';
+import { Command, Response, IceCandidate, ConnectionState, FrameDataMessage } from '../types';
 
 type CommandCallback = (command: Command) => void;
 type ResponseCallback = (response: Response) => void;
@@ -15,6 +15,7 @@ type StreamCallback = (stream: MediaStream) => void;
 type StateCallback = (state: ConnectionState) => void;
 type IceCandidateEmitCallback = (candidate: IceCandidate) => void;
 type DataChannelOpenCallback = () => void;
+type FrameDataCallback = (frameData: FrameDataMessage) => void;
 
 // Type definitions for react-native-webrtc events
 interface RTCPeerConnectionIceEvent {
@@ -46,6 +47,7 @@ class WebRTCService {
   private onConnectionStateCallback: StateCallback | null = null;
   private onIceCandidateCallback: IceCandidateEmitCallback | null = null;
   private onDataChannelOpenCallback: DataChannelOpenCallback | null = null;
+  private onFrameDataCallback: FrameDataCallback | null = null;
 
   // Create peer connection
   createPeerConnection(): RTCPeerConnection {
@@ -152,8 +154,10 @@ class WebRTCService {
       try {
         const message = JSON.parse(event.data);
 
-        // Check if it's a command or response
-        if (this.isCommand(message) && this.onCommandCallback) {
+        // Check if it's a frame data message (high frequency, handle first)
+        if (this.isFrameData(message) && this.onFrameDataCallback) {
+          this.onFrameDataCallback(message);
+        } else if (this.isCommand(message) && this.onCommandCallback) {
           this.onCommandCallback(message);
         } else if (this.isResponse(message) && this.onResponseCallback) {
           this.onResponseCallback(message);
@@ -192,7 +196,15 @@ class WebRTCService {
       'RECORDING_STOPPED',
       'STATE_UPDATE',
       'ERROR',
+      'FRAME_DATA',
     ].includes(m.type || '');
+  }
+
+  // Type guard for frame data messages
+  private isFrameData(message: unknown): message is FrameDataMessage {
+    if (!message || typeof message !== 'object') return false;
+    const m = message as { type?: string };
+    return m.type === 'FRAME_DATA';
   }
 
   // Create and return SDP offer
@@ -377,6 +389,28 @@ class WebRTCService {
     this.dataChannel.send(JSON.stringify(response));
   }
 
+  // Send frame data via data channel (for frame-based streaming)
+  sendFrameData(frameId: number, base64Data: string, timestamp: number): void {
+    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+      // Silently skip - frames are expected to be dropped occasionally
+      return;
+    }
+
+    const frameDataMessage: FrameDataMessage = {
+      type: 'FRAME_DATA',
+      frameId,
+      data: base64Data,
+      timestamp,
+    };
+
+    try {
+      this.dataChannel.send(JSON.stringify(frameDataMessage));
+    } catch (error) {
+      // Frame send failed - expected occasionally due to data channel backpressure
+      console.debug('Frame send failed:', error);
+    }
+  }
+
   // Set callback for incoming commands
   onCommand(callback: CommandCallback): void {
     this.onCommandCallback = callback;
@@ -405,6 +439,11 @@ class WebRTCService {
   // Set callback for data channel open
   onDataChannelOpen(callback: DataChannelOpenCallback): void {
     this.onDataChannelOpenCallback = callback;
+  }
+
+  // Set callback for frame data messages
+  onFrameData(callback: FrameDataCallback): void {
+    this.onFrameDataCallback = callback;
   }
 
   // Get remote stream
@@ -559,6 +598,7 @@ class WebRTCService {
     this.onConnectionStateCallback = null;
     this.onIceCandidateCallback = null;
     this.onDataChannelOpenCallback = null;
+    this.onFrameDataCallback = null;
 
     // Reset switching state
     this.isSwitchingStream = false;

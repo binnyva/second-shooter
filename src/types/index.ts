@@ -13,6 +13,11 @@ export type CaptureMode = 'photo' | 'video';
 // Recording state
 export type RecordingState = 'idle' | 'recording';
 
+// Stream mode for WebRTC preview
+// 'webrtc' - standard WebRTC video stream (works for 1x zoom on back camera and front camera)
+// 'frame-based' - frame capture via vision-camera frame processor for other zoom levels
+export type StreamMode = 'webrtc' | 'frame-based';
+
 // Camera state shared between devices
 export interface CameraState {
   zoom: number;
@@ -20,6 +25,7 @@ export interface CameraState {
   facing: CameraFacing;
   captureMode: CaptureMode;
   isRecording: boolean;
+  streamMode?: StreamMode;
 }
 
 // Commands sent from remote to camera device via data channel
@@ -32,13 +38,22 @@ export type Command =
   | { type: 'SWITCH_CAMERA' }
   | { type: 'GET_STATE' };
 
+// Frame data message sent from camera to remote via data channel (for frame-based streaming)
+export interface FrameDataMessage {
+  type: 'FRAME_DATA';
+  frameId: number;
+  data: string;  // base64 JPEG
+  timestamp: number;
+}
+
 // Responses sent from camera to remote device via data channel
 export type Response =
   | { type: 'PHOTO_TAKEN'; success: boolean; error?: string }
   | { type: 'RECORDING_STARTED' }
   | { type: 'RECORDING_STOPPED'; success: boolean; error?: string }
-  | { type: 'STATE_UPDATE'; state: CameraState; lenses?: LensInfo[]; videoNeedsRotation?: boolean; previewZoomLimited?: boolean }
-  | { type: 'ERROR'; message: string };
+  | { type: 'STATE_UPDATE'; state: CameraState; lenses?: LensInfo[]; videoNeedsRotation?: boolean; previewZoomLimited?: boolean; streamMode?: StreamMode }
+  | { type: 'ERROR'; message: string }
+  | FrameDataMessage;
 
 // WebRTC connection states
 export type ConnectionState =

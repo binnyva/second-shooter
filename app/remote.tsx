@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -9,12 +9,13 @@ import { useRouter } from 'expo-router';
 import { MediaStream } from 'react-native-webrtc';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { QRCodeScanner } from '../src/components/QRCodeScanner';
-import { RemotePreview } from '../src/components/RemotePreview';
+import { HybridPreview } from '../src/components/HybridPreview';
 import { CameraControls } from '../src/components/CameraControls';
 import { useSignaling } from '../src/hooks/useSignaling';
 import { usePeerConnection } from '../src/hooks/usePeerConnection';
 import { useSettings } from '../src/hooks/useSettings';
-import { CameraState, Response, FlashMode, CaptureMode, LensInfo } from '../src/types';
+import { webRTCService } from '../src/services/WebRTCService';
+import { CameraState, Response, FlashMode, CaptureMode, LensInfo, StreamMode, FrameDataMessage } from '../src/types';
 
 const DEFAULT_STATE: CameraState = {
   zoom: 1,
@@ -48,6 +49,8 @@ export default function RemoteScreen() {
   const [remoteLenses, setRemoteLenses] = useState<LensInfo[]>([]);
   const [videoNeedsRotation, setVideoNeedsRotation] = useState(false);
   const [previewZoomLimited, setPreviewZoomLimited] = useState(false);
+  const [streamMode, setStreamMode] = useState<StreamMode>('webrtc');
+  const [latestFrame, setLatestFrame] = useState<FrameDataMessage | null>(null);
 
   // Signaling
   const {
@@ -60,8 +63,25 @@ export default function RemoteScreen() {
     cleanup: cleanupSignaling,
   } = useSignaling('remote');
 
+  // Handle frame data from camera device (for frame-based streaming)
+  const framesReceivedRef = useRef(0);
+  const handleFrameData = useCallback((frameData: FrameDataMessage) => {
+    framesReceivedRef.current++;
+    // Log every 30 frames (~3 seconds)
+    if (framesReceivedRef.current % 30 === 0) {
+      console.log(`[REMOTE] Received ${framesReceivedRef.current} frames, latest id: ${frameData.frameId}, size: ${frameData.data?.length || 0} bytes`);
+    }
+    setLatestFrame(frameData);
+  }, []);
+
   // Handle responses from camera device
   const handleResponse = useCallback((response: Response) => {
+    // Handle frame data separately (high frequency)
+    if (response.type === 'FRAME_DATA') {
+      handleFrameData(response);
+      return;
+    }
+
     console.log('Received response:', response.type);
 
     switch (response.type) {
@@ -75,6 +95,9 @@ export default function RemoteScreen() {
         }
         if (response.previewZoomLimited !== undefined) {
           setPreviewZoomLimited(response.previewZoomLimited);
+        }
+        if (response.streamMode !== undefined) {
+          setStreamMode(response.streamMode);
         }
         break;
 
@@ -116,7 +139,9 @@ export default function RemoteScreen() {
   const handleDataChannelOpen = useCallback(() => {
     console.log('Data channel is now ready');
     setIsDataChannelReady(true);
-  }, []);
+    // Set up frame data callback
+    webRTCService.onFrameData(handleFrameData);
+  }, [handleFrameData]);
 
   // WebRTC connection
   const {
@@ -276,10 +301,12 @@ export default function RemoteScreen() {
       ) : (
         // Remote control view
         <>
-          {/* Remote preview */}
-          <RemotePreview
+          {/* Hybrid preview - supports both WebRTC and frame-based streaming */}
+          <HybridPreview
             stream={remoteStream}
             connectionState={connectionState}
+            streamMode={streamMode}
+            latestFrame={latestFrame}
             facing={remoteState.facing}
             videoNeedsRotation={videoNeedsRotation}
           />

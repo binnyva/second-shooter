@@ -87,6 +87,24 @@ export function useCamera(initialState?: Partial<CameraState>) {
     }
   }, [state.flash]);
 
+  // Take a quick snapshot for preview streaming (doesn't save to gallery)
+  const takeSnapshot = useCallback(async (): Promise<string | null> => {
+    if (!cameraRef.current) {
+      console.log('[takeSnapshot] No camera ref');
+      return null;
+    }
+
+    try {
+      const snapshot = await cameraRef.current.takeSnapshot({
+        quality: 50, // Lower quality for faster streaming
+      });
+      return snapshot.path;
+    } catch (error) {
+      console.log('[takeSnapshot] Error:', error);
+      return null;
+    }
+  }, []);
+
   // Start video recording
   const startRecording = useCallback(async (
     onFinished?: (video: VideoFile) => void,
@@ -162,6 +180,7 @@ export function useCamera(initialState?: Partial<CameraState>) {
     switchCamera,
     setCaptureMode,
     takePhoto,
+    takeSnapshot,
     startRecording,
     stopRecording,
     reset,
