@@ -385,7 +385,6 @@ export default function CameraScreen() {
       startupComplete = true;
     }, 500);
 
-    let captureAttempts = 0;
     const captureInterval = setInterval(async () => {
       // Wait for startup delay
       if (!startupComplete) return;
@@ -394,14 +393,8 @@ export default function CameraScreen() {
       if (isCapturing) return;
 
       isCapturing = true;
-      captureAttempts++;
       try {
         const snapshotPath = await takeSnapshot();
-
-        // Log first few attempts to help diagnose issues
-        if (captureAttempts <= 5) {
-          console.log(`[CAMERA] Capture attempt ${captureAttempts}: snapshotPath=${snapshotPath ? 'got path' : 'null'}`);
-        }
 
         if (snapshotPath) {
           // Ensure path has file:// prefix for expo-file-system
@@ -413,20 +406,14 @@ export default function CameraScreen() {
             base64 = await FileSystem.readAsStringAsync(fileUri, {
               encoding: FileSystem.EncodingType.Base64,
             });
-          } catch (readError) {
-            console.log('[CAMERA] FileSystem read error:', readError, 'path:', fileUri);
+          } catch {
+            // Ignore read errors
           }
 
           if (base64) {
             const frameId = frameIdRef.current++;
             webRTCService.sendFrameData(frameId, base64, Date.now());
             framesSent++;
-            // Log every 24 frames (~3 seconds at 8 FPS)
-            if (framesSent % 24 === 0) {
-              console.log(`[CAMERA] Sent ${framesSent} frames, latest size: ${base64.length} bytes`);
-            }
-          } else if (captureAttempts <= 5) {
-            console.log('[CAMERA] base64 is empty/null');
           }
 
           // Clean up the temporary snapshot file
@@ -436,10 +423,8 @@ export default function CameraScreen() {
             // Ignore cleanup errors
           }
         }
-      } catch (error) {
-        if (captureAttempts <= 5) {
-          console.log('[CAMERA] Frame capture error:', error);
-        }
+      } catch {
+        // Ignore capture errors during transitions
       } finally {
         isCapturing = false;
       }

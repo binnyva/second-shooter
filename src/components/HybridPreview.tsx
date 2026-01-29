@@ -28,25 +28,55 @@ export function HybridPreview({
   facing = 'back',
   videoNeedsRotation = false,
 }: HybridPreviewProps) {
-  const [frameUri, setFrameUri] = useState<string | null>(null);
+  // Double buffering: two frame slots that alternate
+  const [frameA, setFrameA] = useState<string | null>(null);
+  const [frameB, setFrameB] = useState<string | null>(null);
+  const [activeSlot, setActiveSlot] = useState<'A' | 'B'>('A'); // Which slot is currently displayed
   const lastFrameIdRef = useRef<number>(-1);
+  const pendingSlotRef = useRef<'A' | 'B'>('B'); // Which slot is loading the next frame
 
-  // Update frame URI when we receive new frame data
+  // For backward compatibility with hasContent check
+  const frameUri = activeSlot === 'A' ? frameA : frameB;
+
+  // Update the inactive slot when we receive new frame data
   useEffect(() => {
     if (latestFrame && latestFrame.frameId > lastFrameIdRef.current) {
       lastFrameIdRef.current = latestFrame.frameId;
-      // Convert base64 to data URI
-      setFrameUri(`data:image/jpeg;base64,${latestFrame.data}`);
-    }
-  }, [latestFrame]);
+      const newUri = `data:image/jpeg;base64,${latestFrame.data}`;
 
-  // Clear frame URI when switching back to WebRTC mode
+      // Load into the inactive slot
+      if (activeSlot === 'A') {
+        pendingSlotRef.current = 'B';
+        setFrameB(newUri);
+      } else {
+        pendingSlotRef.current = 'A';
+        setFrameA(newUri);
+      }
+    }
+  }, [latestFrame, activeSlot]);
+
+  // Called when the pending frame finishes loading - swap to show it
+  const handleFrameLoaded = (slot: 'A' | 'B') => {
+    if (slot === pendingSlotRef.current) {
+      setActiveSlot(slot);
+    }
+  };
+
+  // Clear frames when switching back to WebRTC mode
   useEffect(() => {
     if (streamMode === 'webrtc') {
-      setFrameUri(null);
+      setFrameA(null);
+      setFrameB(null);
+      setActiveSlot('A');
       lastFrameIdRef.current = -1;
     }
   }, [streamMode]);
+
+  // Has content if either frame slot has data (for double buffering)
+  const hasFrameContent = frameA || frameB;
+  const hasContent =
+    (streamMode === 'webrtc' && stream) ||
+    (streamMode === 'frame-based' && hasFrameContent);
 
   const getStatusMessage = (): string => {
     switch (connectionState) {
@@ -56,7 +86,7 @@ export function HybridPreview({
         if (streamMode === 'webrtc') {
           return stream ? '' : 'Waiting for video stream...';
         } else {
-          return frameUri ? '' : 'Waiting for frames...';
+          return hasFrameContent ? '' : 'Waiting for frames...';
         }
       case 'failed':
         return 'Connection failed. Please try again.';
@@ -69,16 +99,18 @@ export function HybridPreview({
     connectionState === 'connecting' ||
     (connectionState === 'connected' &&
       ((streamMode === 'webrtc' && !stream) ||
-        (streamMode === 'frame-based' && !frameUri)));
+        (streamMode === 'frame-based' && !hasFrameContent)));
 
-  const hasContent =
-    (streamMode === 'webrtc' && stream) ||
-    (streamMode === 'frame-based' && frameUri);
-
-  // Debug logging
+  // Debug logging (only log on significant changes, not every frame)
+  const prevStreamModeRef = useRef(streamMode);
+  const prevHasContentRef = useRef(hasContent);
   useEffect(() => {
-    console.log(`[HybridPreview] streamMode=${streamMode}, hasFrameUri=${!!frameUri}, hasStream=${!!stream}, hasContent=${hasContent}`);
-  }, [streamMode, frameUri, stream, hasContent]);
+    if (streamMode !== prevStreamModeRef.current || hasContent !== prevHasContentRef.current) {
+      console.log(`[HybridPreview] streamMode=${streamMode}, hasFrameContent=${!!hasFrameContent}, hasStream=${!!stream}, hasContent=${!!hasContent}`);
+      prevStreamModeRef.current = streamMode;
+      prevHasContentRef.current = hasContent;
+    }
+  }, [streamMode, hasFrameContent, stream, hasContent]);
 
   return (
     <View style={styles.container}>
@@ -102,18 +134,69 @@ export function HybridPreview({
             </View>
           )}
 
-          {/* Frame-based image preview */}
-          {streamMode === 'frame-based' && frameUri && (
-            <Image
-              source={{ uri: frameUri }}
-              style={[
-                StyleSheet.absoluteFill,
-                facing === 'front' && { transform: [{ scaleX: -1 }] },
-              ]}
-              resizeMode="cover"
-              // Disable fade animation to prevent black flash between frames
-              fadeDuration={0}
-            />
+          {/* Frame-based image preview with double buffering */}
+          {/* Both frames rendered, active one on top via render order */}
+          {streamMode === 'frame-based' && (
+            <View style={StyleSheet.absoluteFill}>
+              {/* Render both frames - inactive behind, active on top */}
+              {activeSlot === 'A' ? (
+                <>
+                  {/* B behind (loading next frame) */}
+                  {frameB && (
+                    <Image
+                      source={{ uri: frameB }}
+                      style={[
+                        StyleSheet.absoluteFill,
+                        facing === 'front' && { transform: [{ scaleX: -1 }] },
+                      ]}
+                      resizeMode="cover"
+                      fadeDuration={0}
+                      onLoad={() => handleFrameLoaded('B')}
+                    />
+                  )}
+                  {/* A on top (currently displayed) */}
+                  {frameA && (
+                    <Image
+                      source={{ uri: frameA }}
+                      style={[
+                        StyleSheet.absoluteFill,
+                        facing === 'front' && { transform: [{ scaleX: -1 }] },
+                      ]}
+                      resizeMode="cover"
+                      fadeDuration={0}
+                    />
+                  )}
+                </>
+              ) : (
+                <>
+                  {/* A behind (loading next frame) */}
+                  {frameA && (
+                    <Image
+                      source={{ uri: frameA }}
+                      style={[
+                        StyleSheet.absoluteFill,
+                        facing === 'front' && { transform: [{ scaleX: -1 }] },
+                      ]}
+                      resizeMode="cover"
+                      fadeDuration={0}
+                      onLoad={() => handleFrameLoaded('A')}
+                    />
+                  )}
+                  {/* B on top (currently displayed) */}
+                  {frameB && (
+                    <Image
+                      source={{ uri: frameB }}
+                      style={[
+                        StyleSheet.absoluteFill,
+                        facing === 'front' && { transform: [{ scaleX: -1 }] },
+                      ]}
+                      resizeMode="cover"
+                      fadeDuration={0}
+                    />
+                  )}
+                </>
+              )}
+            </View>
           )}
         </>
       ) : (
