@@ -84,3 +84,6 @@ export interface LensInfo {
   zoom: number;      // Actual zoom factor
   isActive: boolean;
 }
+
+// Re-export settings types
+export * from './settings';

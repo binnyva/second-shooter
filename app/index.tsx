@@ -17,11 +17,16 @@ import {
 } from 'react-native-vision-camera';
 import { RTCView } from 'react-native-webrtc';
 import ViewShot, { captureRef } from 'react-native-view-shot';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { CameraControls } from '../src/components/CameraControls';
 import { QRCodeDisplay } from '../src/components/QRCodeDisplay';
+import { GridOverlay } from '../src/components/GridOverlay';
+import { TimerCountdown } from '../src/components/TimerCountdown';
+import { AspectRatioContainer } from '../src/components/AspectRatioContainer';
 import { useCamera } from '../src/hooks/useCamera';
 import { useSignaling } from '../src/hooks/useSignaling';
 import { usePeerConnection } from '../src/hooks/usePeerConnection';
+import { useSettings } from '../src/hooks/useSettings';
 import { requestMediaLibraryPermission } from '../src/utils/permissions';
 import { detectLenses } from '../src/utils/lensDetection';
 import { mediaService } from '../src/services/MediaService';
@@ -51,6 +56,26 @@ export default function CameraScreen() {
     stopRecording,
     updateState,
   } = useCamera();
+
+  // Settings
+  const { settings } = useSettings();
+
+  // Keep screen awake based on setting
+  useEffect(() => {
+    if (settings.keepScreenAwake) {
+      activateKeepAwakeAsync('camera-screen');
+    } else {
+      deactivateKeepAwake('camera-screen');
+    }
+    return () => {
+      deactivateKeepAwake('camera-screen');
+    };
+  }, [settings.keepScreenAwake]);
+
+  // Timer countdown state
+  const [showTimerCountdown, setShowTimerCountdown] = useState(false);
+  const [timerSeconds, setTimerSeconds] = useState(0);
+  const pendingTimerPhoto = useRef<(() => void) | null>(null);
 
   // QR code state
   const [showQR, setShowQR] = useState(false);
@@ -470,9 +495,9 @@ export default function CameraScreen() {
     await mediaService.openGallery();
   };
 
-  // Handle settings press (placeholder for now)
+  // Handle settings press
   const handleSettingsPress = () => {
-    Alert.alert('Settings', 'Settings coming soon!');
+    router.push('/settings');
   };
 
   // Handle lens selection
@@ -480,8 +505,8 @@ export default function CameraScreen() {
     setZoom(zoom);
   };
 
-  // Wrap takePhoto to update lastPhotoUri after capturing
-  const handleTakePhoto = async () => {
+  // Actually take the photo (called directly or after timer)
+  const actuallyTakePhoto = useCallback(async () => {
     try {
       await takePhoto();
       // Refresh last photo after a brief delay to allow save to complete
@@ -493,6 +518,22 @@ export default function CameraScreen() {
       }, 500);
     } catch (error) {
       console.error('Error taking photo:', error);
+    }
+  }, [takePhoto]);
+
+  // Handle timer countdown completion
+  const handleTimerComplete = useCallback(() => {
+    setShowTimerCountdown(false);
+    actuallyTakePhoto();
+  }, [actuallyTakePhoto]);
+
+  // Wrap takePhoto to support timer
+  const handleTakePhoto = async () => {
+    if (settings.timer > 0) {
+      setTimerSeconds(settings.timer);
+      setShowTimerCountdown(true);
+    } else {
+      await actuallyTakePhoto();
     }
   };
 
@@ -525,36 +566,41 @@ export default function CameraScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Camera preview - show RTCView when streaming, vision-camera otherwise */}
-      <ViewShot ref={previewRef} style={StyleSheet.absoluteFill}>
-        {isStreamingToRemote && webrtcLocalStream ? (
-          <View style={[
-            StyleSheet.absoluteFill,
-            videoNeedsRotation && { transform: [{ rotate: '180deg' }] }
-          ]}>
-            <RTCView
-              streamURL={webrtcLocalStream.toURL()}
+      {/* Camera preview with aspect ratio container */}
+      <AspectRatioContainer ratio={settings.aspectRatio}>
+        <ViewShot ref={previewRef} style={StyleSheet.absoluteFill}>
+          {isStreamingToRemote && webrtcLocalStream ? (
+            <View style={[
+              StyleSheet.absoluteFill,
+              videoNeedsRotation && { transform: [{ rotate: '180deg' }] }
+            ]}>
+              <RTCView
+                streamURL={webrtcLocalStream.toURL()}
+                style={StyleSheet.absoluteFill}
+                objectFit="cover"
+                mirror={cameraState.facing === 'front'}
+              />
+            </View>
+          ) : (
+            <Camera
+              key={`camera-${cameraKey}`}
+              ref={cameraRef}
               style={StyleSheet.absoluteFill}
-              objectFit="cover"
-              mirror={cameraState.facing === 'front'}
+              device={device}
+              isActive={isFocused && !isStreamingToRemote}
+              photo={true}
+              video={true}
+              audio={true}
+              zoom={cameraState.zoom}
+              enableZoomGesture={true}
+              onInitialized={handleCameraInitialized}
             />
-          </View>
-        ) : (
-          <Camera
-            key={`camera-${cameraKey}`}
-            ref={cameraRef}
-            style={StyleSheet.absoluteFill}
-            device={device}
-            isActive={isFocused && !isStreamingToRemote}
-            photo={true}
-            video={true}
-            audio={true}
-            zoom={cameraState.zoom}
-            enableZoomGesture={true}
-            onInitialized={handleCameraInitialized}
-          />
-        )}
-      </ViewShot>
+          )}
+        </ViewShot>
+
+        {/* Grid overlay */}
+        <GridOverlay type={settings.gridOverlay} />
+      </AspectRatioContainer>
 
       {/* Frozen frame overlay during photo capture transition */}
       {frozenFrameUri && (
@@ -562,6 +608,14 @@ export default function CameraScreen() {
           source={{ uri: frozenFrameUri }}
           style={StyleSheet.absoluteFill}
           resizeMode="cover"
+        />
+      )}
+
+      {/* Timer countdown overlay */}
+      {showTimerCountdown && (
+        <TimerCountdown
+          seconds={timerSeconds}
+          onComplete={handleTimerComplete}
         />
       )}
 

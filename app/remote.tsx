@@ -7,11 +7,13 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MediaStream } from 'react-native-webrtc';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { QRCodeScanner } from '../src/components/QRCodeScanner';
 import { RemotePreview } from '../src/components/RemotePreview';
 import { CameraControls } from '../src/components/CameraControls';
 import { useSignaling } from '../src/hooks/useSignaling';
 import { usePeerConnection } from '../src/hooks/usePeerConnection';
+import { useSettings } from '../src/hooks/useSettings';
 import { CameraState, Response, FlashMode, CaptureMode, LensInfo } from '../src/types';
 
 const DEFAULT_STATE: CameraState = {
@@ -24,6 +26,21 @@ const DEFAULT_STATE: CameraState = {
 
 export default function RemoteScreen() {
   const router = useRouter();
+
+  // Settings
+  const { settings } = useSettings();
+
+  // Keep screen awake based on setting
+  useEffect(() => {
+    if (settings.keepScreenAwake) {
+      activateKeepAwakeAsync('remote-screen');
+    } else {
+      deactivateKeepAwake('remote-screen');
+    }
+    return () => {
+      deactivateKeepAwake('remote-screen');
+    };
+  }, [settings.keepScreenAwake]);
 
   // UI state
   const [showScanner, setShowScanner] = useState(true);
@@ -222,9 +239,9 @@ export default function RemoteScreen() {
     router.replace('/');
   };
 
-  // Handle settings press (placeholder)
+  // Handle settings press
   const handleSettingsPress = () => {
-    Alert.alert('Settings', 'Settings coming soon!');
+    router.push('/settings');
   };
 
   // Handle lens selection - send command to camera
