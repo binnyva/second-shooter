@@ -151,21 +151,33 @@ export function usePeerConnection({
 
   // Start local stream and add to connection (camera device)
   const startLocalStream = useCallback(async (): Promise<MediaStream> => {
-    const stream = await webRTCService.getLocalStream('back');
-    setLocalStream(stream);
-    webRTCService.addLocalStream(stream);
-    return stream;
+    console.log(`[usePeerConnection] startLocalStream called`);
+    try {
+      const stream = await webRTCService.getLocalStream('back');
+      console.log(`[usePeerConnection] startLocalStream: Got stream, setting state`);
+      setLocalStream(stream);
+      console.log(`[usePeerConnection] startLocalStream: Adding stream to peer connection`);
+      webRTCService.addLocalStream(stream);
+      console.log(`[usePeerConnection] startLocalStream: Complete`);
+      return stream;
+    } catch (error) {
+      console.error(`[usePeerConnection] startLocalStream FAILED:`, error);
+      throw error;
+    }
   }, []);
 
   // Pause local stream (releases camera hardware for vision-camera)
   const pauseLocalStream = useCallback((): void => {
+    console.log(`[usePeerConnection] pauseLocalStream called`);
     webRTCService.pauseLocalStream();
   }, []);
 
   // Resume local stream (gets new stream after vision-camera is done)
   const resumeLocalStream = useCallback(async (facingMode: 'front' | 'back' = 'back'): Promise<void> => {
+    console.log(`[usePeerConnection] resumeLocalStream called: facingMode=${facingMode}`);
     await webRTCService.resumeLocalStream(facingMode);
     const stream = webRTCService.getLocalStreamRef();
+    console.log(`[usePeerConnection] resumeLocalStream: Got stream ref: ${!!stream}`);
     if (stream) {
       setLocalStream(stream);
     }

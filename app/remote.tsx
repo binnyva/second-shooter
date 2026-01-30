@@ -86,6 +86,7 @@ export default function RemoteScreen() {
 
     switch (response.type) {
       case 'STATE_UPDATE':
+        console.log(`[REMOTE] STATE_UPDATE: zoom=${response.state.zoom}, facing=${response.state.facing}, streamMode=${response.streamMode}`);
         setRemoteState(response.state);
         if (response.lenses) {
           setRemoteLenses(response.lenses);
@@ -97,6 +98,9 @@ export default function RemoteScreen() {
           setPreviewZoomLimited(response.previewZoomLimited);
         }
         if (response.streamMode !== undefined) {
+          if (response.streamMode !== streamMode) {
+            console.log(`[REMOTE] Stream mode changing: ${streamMode} -> ${response.streamMode}`);
+          }
           setStreamMode(response.streamMode);
         }
         break;
@@ -129,7 +133,12 @@ export default function RemoteScreen() {
 
   // Handle remote stream from camera
   const handleRemoteStream = useCallback((stream: MediaStream) => {
-    console.log('Received remote stream');
+    const tracks = stream.getTracks();
+    const videoTracks = stream.getVideoTracks();
+    console.log(`[REMOTE] Received remote stream: ${tracks.length} tracks total, ${videoTracks.length} video tracks`);
+    videoTracks.forEach((track, i) => {
+      console.log(`[REMOTE] Video track ${i}: id=${track.id}, readyState=${track.readyState}, enabled=${track.enabled}`);
+    });
   }, []);
 
   // Track data channel ready state

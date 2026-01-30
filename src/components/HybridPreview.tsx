@@ -41,15 +41,19 @@ export function HybridPreview({
   // Update the inactive slot when we receive new frame data
   useEffect(() => {
     if (latestFrame && latestFrame.frameId > lastFrameIdRef.current) {
+      const dataSize = latestFrame.data?.length || 0;
+      console.log(`[HybridPreview] New frame ${latestFrame.frameId} received, size=${dataSize}, activeSlot=${activeSlot}`);
       lastFrameIdRef.current = latestFrame.frameId;
       const newUri = `data:image/jpeg;base64,${latestFrame.data}`;
 
       // Load into the inactive slot
       if (activeSlot === 'A') {
         pendingSlotRef.current = 'B';
+        console.log(`[HybridPreview] Setting frameB (inactive slot)`);
         setFrameB(newUri);
       } else {
         pendingSlotRef.current = 'A';
+        console.log(`[HybridPreview] Setting frameA (inactive slot)`);
         setFrameA(newUri);
       }
     }
@@ -57,9 +61,15 @@ export function HybridPreview({
 
   // Called when the pending frame finishes loading - swap to show it
   const handleFrameLoaded = (slot: 'A' | 'B') => {
+    console.log(`[HybridPreview] Image ${slot} loaded! pendingSlot=${pendingSlotRef.current}, will swap=${slot === pendingSlotRef.current}`);
     if (slot === pendingSlotRef.current) {
       setActiveSlot(slot);
     }
+  };
+
+  // Called when image fails to load
+  const handleFrameError = (slot: 'A' | 'B', error: any) => {
+    console.log(`[HybridPreview] Image ${slot} LOAD ERROR:`, error?.nativeEvent?.error || error);
   };
 
   // Clear frames when switching back to WebRTC mode
@@ -102,15 +112,33 @@ export function HybridPreview({
         (streamMode === 'frame-based' && !hasFrameContent)));
 
   // Debug logging (only log on significant changes, not every frame)
+  // IMPORTANT: Never log frame data URIs - they contain base64 content that floods logs
   const prevStreamModeRef = useRef(streamMode);
   const prevHasContentRef = useRef(hasContent);
+  const prevStreamRef = useRef(stream);
   useEffect(() => {
-    if (streamMode !== prevStreamModeRef.current || hasContent !== prevHasContentRef.current) {
-      console.log(`[HybridPreview] streamMode=${streamMode}, hasFrameContent=${!!hasFrameContent}, hasStream=${!!stream}, hasContent=${!!hasContent}`);
+    const streamChanged = stream !== prevStreamRef.current;
+    if (streamMode !== prevStreamModeRef.current || hasContent !== prevHasContentRef.current || streamChanged) {
+      console.log(`[HybridPreview] === State Change ===`);
+      console.log(`[HybridPreview] streamMode: ${prevStreamModeRef.current} -> ${streamMode}`);
+      console.log(`[HybridPreview] hasContent: ${prevHasContentRef.current} -> ${hasContent}`);
+      console.log(`[HybridPreview] stream exists: ${!!prevStreamRef.current} -> ${!!stream}`);
+      if (stream) {
+        const tracks = stream.getTracks();
+        const videoTracks = stream.getVideoTracks();
+        console.log(`[HybridPreview] stream tracks: total=${tracks.length}, video=${videoTracks.length}`);
+        videoTracks.forEach((t, i) => {
+          console.log(`[HybridPreview] video track ${i}: id=${t.id}, readyState=${t.readyState}, enabled=${t.enabled}`);
+        });
+      }
+      // Log presence of frames (boolean only), never log actual frame content/URIs
+      console.log(`[HybridPreview] hasFrameContent=${!!hasFrameContent}, frameA=${!!frameA}, frameB=${!!frameB}`);
+      console.log(`[HybridPreview] connectionState=${connectionState}`);
       prevStreamModeRef.current = streamMode;
       prevHasContentRef.current = hasContent;
+      prevStreamRef.current = stream;
     }
-  }, [streamMode, hasFrameContent, stream, hasContent]);
+  }, [streamMode, hasFrameContent, stream, hasContent, frameA, frameB, connectionState]);
 
   return (
     <View style={styles.container}>
@@ -152,6 +180,7 @@ export function HybridPreview({
                       resizeMode="cover"
                       fadeDuration={0}
                       onLoad={() => handleFrameLoaded('B')}
+                      onError={(e) => handleFrameError('B', e)}
                     />
                   )}
                   {/* A on top (currently displayed) */}
@@ -180,6 +209,7 @@ export function HybridPreview({
                       resizeMode="cover"
                       fadeDuration={0}
                       onLoad={() => handleFrameLoaded('A')}
+                      onError={(e) => handleFrameError('A', e)}
                     />
                   )}
                   {/* B on top (currently displayed) */}

@@ -27,9 +27,10 @@ import { usePeerConnection } from '../src/hooks/usePeerConnection';
 import { useSettings } from '../src/hooks/useSettings';
 import { requestMediaLibraryPermission } from '../src/utils/permissions';
 import { detectLenses } from '../src/utils/lensDetection';
+import { determineStreamMode } from '../src/utils/streamMode';
 import { mediaService } from '../src/services/MediaService';
 import { webRTCService } from '../src/services/WebRTCService';
-import { Command, CameraState, LensInfo } from '../src/types';
+import { Command, CameraState, LensInfo, StreamMode } from '../src/types';
 
 export default function CameraScreen() {
   const router = useRouter();
@@ -85,7 +86,13 @@ export default function CameraScreen() {
   const [lastPhotoUri, setLastPhotoUri] = useState<string | undefined>();
   const [availableLenses, setAvailableLenses] = useState<LensInfo[]>([]);
 
-  // Track if WebRTC is using the camera (to deactivate vision-camera)
+  // Stream mode tracking (WebRTC for 1x/front, frame-based for other zoom levels)
+  const [currentStreamMode, setCurrentStreamMode] = useState<StreamMode>('frame-based');
+
+  // Track if WebRTC is actively using the camera (to deactivate vision-camera during WebRTC streaming)
+  const [isWebRTCUsingCamera, setIsWebRTCUsingCamera] = useState(false);
+
+  // Track if remote connection is active (used for showing connection indicator)
   const [isStreamingToRemote, setIsStreamingToRemote] = useState(false);
   // Key to force Camera remount when screen regains focus (fixes vision-camera not restarting)
   const [cameraKey, setCameraKey] = useState(0);
@@ -94,6 +101,9 @@ export default function CameraScreen() {
 
   // Ref to track current facing for use in callbacks (avoids stale closure issues)
   const facingRef = useRef<'front' | 'back'>('back');
+
+  // Ref to track current stream mode for use in callbacks (avoids stale closure issues)
+  const streamModeRef = useRef<StreamMode>('frame-based');
 
   // Signaling
   const {
@@ -112,9 +122,10 @@ export default function CameraScreen() {
 
   // Handle camera becoming active again
   const handleCameraInitialized = useCallback(() => {
-    console.log('[CAMERA] Camera initialized');
+    console.log('[CAMERA] Vision camera initialized (onInitialized callback fired)');
+    console.log(`[CAMERA] Current state: isWebRTCUsingCamera=${isWebRTCUsingCamera}, currentStreamMode=${currentStreamMode}`);
     setIsCameraInitialized(true);
-  }, []);
+  }, [isWebRTCUsingCamera, currentStreamMode]);
 
   // Handle incoming commands from remote
   const handleCommand = useCallback(async (command: Command) => {
@@ -170,8 +181,8 @@ export default function CameraScreen() {
         break;
 
       case 'GET_STATE':
-        // Send state with frame-based mode since we always use snapshot capture
-        sendStateUpdate(cameraState, availableLenses, false, false, 'frame-based');
+        // Send state with current stream mode (uses ref to avoid stale closure)
+        sendStateUpdate(cameraState, availableLenses, false, false, streamModeRef.current);
         break;
     }
   }, [takePhoto, startRecording, stopRecording, setZoom, updateState, switchCamera, cameraState, availableLenses]);
@@ -187,6 +198,8 @@ export default function CameraScreen() {
     sendResponse,
     sendStateUpdate,
     startLocalStream,
+    pauseLocalStream,
+    resumeLocalStream,
     close: closeConnection,
   } = usePeerConnection({
     role: 'camera',
@@ -224,6 +237,13 @@ export default function CameraScreen() {
     }
     wasFocusedRef.current = isFocused;
   }, [isFocused]);
+
+  // Debug: Log camera isActive state changes
+  const cameraIsActive = isFocused && !cameraState.isRecording && !isWebRTCUsingCamera;
+  useEffect(() => {
+    console.log(`[CAMERA] Vision camera isActive changed: ${cameraIsActive}`);
+    console.log(`[CAMERA]   - isFocused=${isFocused}, isRecording=${cameraState.isRecording}, isWebRTCUsingCamera=${isWebRTCUsingCamera}`);
+  }, [cameraIsActive, isFocused, cameraState.isRecording, isWebRTCUsingCamera]);
 
   // Request permissions on mount
   useEffect(() => {
@@ -271,6 +291,7 @@ export default function CameraScreen() {
 
   // Handle QR code display and session creation
   const handleShowQR = async () => {
+    console.log('[CAMERA] handleShowQR: Starting connection setup...');
     setIsQRLoading(true);
     try {
       // Mark as streaming (but vision-camera stays active for local preview with zoom)
@@ -278,37 +299,62 @@ export default function CameraScreen() {
 
       // Create signaling session
       const newSessionId = await createSession();
-      console.log('Created session:', newSessionId);
+      console.log('[CAMERA] handleShowQR: Created session:', newSessionId);
 
-      // Create WebRTC connection (data channel only, no video stream)
-      // This allows vision-camera to keep the camera hardware for zoom support
+      // Create WebRTC connection
+      console.log('[CAMERA] handleShowQR: Creating WebRTC connection...');
       await createConnection();
+      console.log('[CAMERA] handleShowQR: WebRTC connection created');
 
-      // Don't call startLocalStream() - we'll use snapshot-based frame capture instead
-      // This keeps vision-camera in control of the camera hardware, enabling zoom
+      // Determine initial stream mode based on current camera state
+      const initialStreamMode = determineStreamMode(cameraState.facing, cameraState.zoom);
+      console.log(`[CAMERA] handleShowQR: Initial stream mode will be: ${initialStreamMode}`);
 
-      // Create and send offer
+      // IMPORTANT: Add video track BEFORE creating offer so it's included in SDP negotiation
+      // This avoids the need for renegotiation when switching to WebRTC mode later
+      if (initialStreamMode === 'webrtc') {
+        console.log('[CAMERA] handleShowQR: Starting in WebRTC mode, deactivating vision-camera first...');
+        setIsWebRTCUsingCamera(true);
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+
+      console.log('[CAMERA] handleShowQR: Adding video track to connection...');
+      await startLocalStream();
+      setCurrentStreamMode(initialStreamMode);
+
+      // If starting in frame-based mode, pause the WebRTC stream immediately
+      // (the track is in the SDP but we won't send video frames)
+      if (initialStreamMode === 'frame-based') {
+        console.log('[CAMERA] handleShowQR: Starting in frame-based mode, pausing WebRTC stream...');
+        pauseLocalStream();
+      }
+
+      // Create and send offer (now includes video track)
+      console.log('[CAMERA] handleShowQR: Creating offer...');
       const offer = await createOffer();
+      console.log('[CAMERA] handleShowQR: Offer created, sending to signaling...');
       await sendOffer({ type: 'offer', sdp: offer.sdp! });
 
       // Listen for ICE candidates from remote
       listenForIceCandidate(async (candidate) => {
-        console.log('Received ICE candidate from remote');
+        console.log('[CAMERA] Received ICE candidate from remote');
         await addPeerIceCandidate(candidate);
       });
 
       // Listen for answer from remote
       onAnswer(async (answer) => {
-        console.log('Received answer from remote');
+        console.log('[CAMERA] Received answer from remote, setting remote description...');
         await setRemoteDescription({ type: 'answer', sdp: answer.sdp });
+        console.log('[CAMERA] Remote description set. Connection should be established.');
         setIsRemoteConnected(true);
         setShowQR(false);
       });
 
       setShowQR(true);
       setIsQRLoading(false);
+      console.log('[CAMERA] handleShowQR: Setup complete, showing QR code');
     } catch (error) {
-      console.error('Error setting up remote connection:', error);
+      console.error('[CAMERA] handleShowQR ERROR:', error);
       Alert.alert('Error', 'Failed to create remote connection');
       setIsStreamingToRemote(false);
       setIsQRLoading(false);
@@ -320,14 +366,22 @@ export default function CameraScreen() {
     cleanupSignaling();
     closeConnection();
     setIsStreamingToRemote(false);
+    setIsWebRTCUsingCamera(false);
+    setCurrentStreamMode('frame-based');
   };
 
   // Update remote connection state
   useEffect(() => {
+    console.log(`[CAMERA] Connection state changed: ${connectionState}`);
     if (connectionState === 'connected') {
+      console.log(`[CAMERA] Remote connected! Setting isRemoteConnected=true`);
       setIsRemoteConnected(true);
     } else if (connectionState === 'failed' || connectionState === 'disconnected') {
+      console.log(`[CAMERA] Remote disconnected. Resetting states...`);
       setIsRemoteConnected(false);
+      // Reset WebRTC camera usage when connection drops
+      setIsWebRTCUsingCamera(false);
+      setCurrentStreamMode('frame-based');
     }
   }, [connectionState]);
 
@@ -341,60 +395,182 @@ export default function CameraScreen() {
     facingRef.current = cameraState.facing;
   }, [cameraState.facing]);
 
+  // Keep stream mode ref in sync with state (for use in callbacks)
+  useEffect(() => {
+    streamModeRef.current = currentStreamMode;
+  }, [currentStreamMode]);
+
+  // Handle stream mode switching between WebRTC and frame-based
+  const handleStreamModeSwitch = useCallback(async (newMode: StreamMode) => {
+    console.log(`[CAMERA] ========== STREAM MODE SWITCH START ==========`);
+    console.log(`[CAMERA] Current mode: ${streamModeRef.current}, Target mode: ${newMode}`);
+    console.log(`[CAMERA] Current state: isWebRTCUsingCamera=${isWebRTCUsingCamera}, isCameraInitialized=${isCameraInitialized}`);
+    console.log(`[CAMERA] Camera facing: ${cameraState.facing}`);
+
+    if (newMode === 'webrtc') {
+      // First, mark that WebRTC will use the camera (this deactivates vision-camera)
+      console.log(`[CAMERA] Step 1: Setting isWebRTCUsingCamera=true (deactivating vision-camera)`);
+      setIsWebRTCUsingCamera(true);
+      // Wait for vision-camera to release the camera hardware
+      console.log(`[CAMERA] Step 2: Waiting 200ms for vision-camera to release...`);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      // Resume WebRTC stream (track already exists, just replace with new stream)
+      console.log(`[CAMERA] Step 3: Resuming WebRTC local stream...`);
+      try {
+        await resumeLocalStream(cameraState.facing);
+        console.log(`[CAMERA] Step 3: WebRTC local stream resumed successfully`);
+      } catch (error) {
+        console.error(`[CAMERA] Step 3 FAILED: WebRTC resume error:`, error);
+      }
+    } else {
+      // First, pause WebRTC stream to release the camera
+      console.log(`[CAMERA] Step 1: Pausing WebRTC stream...`);
+      pauseLocalStream();
+      // Wait for WebRTC to release the camera hardware
+      console.log(`[CAMERA] Step 2: Waiting 200ms for WebRTC to release camera...`);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      // Reset camera initialized state so frame capture waits for vision-camera to restart
+      console.log(`[CAMERA] Step 3: Setting isCameraInitialized=false`);
+      setIsCameraInitialized(false);
+      // Force camera remount to ensure onInitialized fires
+      console.log(`[CAMERA] Step 4: Incrementing cameraKey to force remount`);
+      setCameraKey(prev => prev + 1);
+      // Mark that WebRTC is no longer using the camera (this reactivates vision-camera)
+      console.log(`[CAMERA] Step 5: Setting isWebRTCUsingCamera=false (reactivating vision-camera)`);
+      setIsWebRTCUsingCamera(false);
+    }
+    console.log(`[CAMERA] Step Final: Setting currentStreamMode=${newMode}`);
+    setCurrentStreamMode(newMode);
+    sendStateUpdate(cameraState, availableLenses, false, false, newMode);
+    console.log(`[CAMERA] ========== STREAM MODE SWITCH END ==========`);
+  }, [resumeLocalStream, pauseLocalStream, sendStateUpdate, cameraState, availableLenses, isWebRTCUsingCamera, isCameraInitialized]);
+
+  // Debounced stream mode detection based on camera facing and zoom
+  useEffect(() => {
+    if (!isRemoteConnected || !isDataChannelReady) {
+      console.log(`[CAMERA] Stream mode check skipped: isRemoteConnected=${isRemoteConnected}, isDataChannelReady=${isDataChannelReady}`);
+      return;
+    }
+
+    const targetMode = determineStreamMode(cameraState.facing, cameraState.zoom);
+    console.log(`[CAMERA] Stream mode check: facing=${cameraState.facing}, zoom=${cameraState.zoom.toFixed(2)}, targetMode=${targetMode}, currentMode=${streamModeRef.current}`);
+
+    // Only switch if mode actually changed
+    if (targetMode === streamModeRef.current) {
+      return;
+    }
+
+    console.log(`[CAMERA] Stream mode change needed: ${streamModeRef.current} -> ${targetMode}, starting 300ms debounce...`);
+
+    // Debounce to avoid rapid switching during pinch-to-zoom
+    const debounceTimer = setTimeout(() => {
+      // Re-check after debounce in case values changed
+      const currentTargetMode = determineStreamMode(cameraState.facing, cameraState.zoom);
+      console.log(`[CAMERA] Debounce complete: currentTargetMode=${currentTargetMode}, streamModeRef=${streamModeRef.current}`);
+      if (currentTargetMode !== streamModeRef.current) {
+        console.log(`[CAMERA] Triggering stream mode switch...`);
+        handleStreamModeSwitch(currentTargetMode);
+      } else {
+        console.log(`[CAMERA] Mode already matches, skipping switch`);
+      }
+    }, 300);
+
+    return () => clearTimeout(debounceTimer);
+  }, [cameraState.facing, cameraState.zoom, isRemoteConnected, isDataChannelReady, handleStreamModeSwitch]);
+
+  // Log data channel ready state changes
+  useEffect(() => {
+    console.log(`[CAMERA] isDataChannelReady changed: ${isDataChannelReady}`);
+  }, [isDataChannelReady]);
+
   // Send state updates when camera state changes and data channel is ready
   useEffect(() => {
     if (isRemoteConnected && isDataChannelReady) {
-      // Send state with frame-based mode since we always use snapshot capture
-      sendStateUpdate(cameraState, availableLenses, false, false, 'frame-based');
+      console.log(`[CAMERA] Sending state update: zoom=${cameraState.zoom.toFixed(2)}, facing=${cameraState.facing}, streamMode=${currentStreamMode}`);
+      sendStateUpdate(cameraState, availableLenses, false, false, currentStreamMode);
     }
-  }, [cameraState, availableLenses, isRemoteConnected, isDataChannelReady, sendStateUpdate]);
+  }, [cameraState, availableLenses, isRemoteConnected, isDataChannelReady, sendStateUpdate, currentStreamMode]);
 
   // Reset camera initialized state when camera key changes (remount)
   useEffect(() => {
+    console.log(`[CAMERA] cameraKey changed to ${cameraKey}, resetting isCameraInitialized to false`);
     setIsCameraInitialized(false);
   }, [cameraKey]);
 
+  // Debug: Log isCameraInitialized changes
+  useEffect(() => {
+    console.log(`[CAMERA] isCameraInitialized changed to: ${isCameraInitialized}`);
+  }, [isCameraInitialized]);
+
   // Frame capture using vision-camera snapshot - sends frames to remote device
+  // Only used when in frame-based mode (not WebRTC)
   const frameIdRef = useRef(0);
   useEffect(() => {
+    console.log(`[CAMERA] Frame capture effect triggered: isRemoteConnected=${isRemoteConnected}, isDataChannelReady=${isDataChannelReady}, currentStreamMode=${currentStreamMode}, isCameraInitialized=${isCameraInitialized}, isRecording=${cameraState.isRecording}`);
+
     if (!isRemoteConnected || !isDataChannelReady) {
+      console.log('[CAMERA] Frame capture: Not connected, skipping');
+      return;
+    }
+
+    // Skip frame capture when using WebRTC native stream
+    if (currentStreamMode === 'webrtc') {
+      console.log('[CAMERA] Frame capture: Using WebRTC stream, skipping frame capture');
       return;
     }
 
     // Wait for camera to be initialized
     if (!isCameraInitialized) {
-      console.log('[CAMERA] Waiting for camera to initialize before frame capture');
+      console.log('[CAMERA] Frame capture: Waiting for camera to initialize');
       return;
     }
 
     // Don't capture frames during recording (to avoid performance issues)
     if (cameraState.isRecording) {
+      console.log('[CAMERA] Frame capture: Recording in progress, skipping');
       return;
     }
 
-    console.log('[CAMERA] Starting snapshot frame capture for remote preview');
+    console.log('[CAMERA] Frame capture: Starting snapshot frame capture for remote preview (frame-based mode)');
 
     // Capture and send frames at ~8 FPS (need time for file I/O)
     let framesSent = 0;
+    let frameErrors = 0;
     let isCapturing = false; // Prevent overlapping captures
     let startupComplete = false;
 
     // Delay actual capture start by 500ms to let camera fully stabilize
     const captureStartTimer = setTimeout(() => {
-      console.log('[CAMERA] Camera stabilized, beginning frame capture');
+      console.log('[CAMERA] Frame capture: Camera stabilized, beginning frame capture');
       startupComplete = true;
     }, 500);
 
+    // Log frame stats every 3 seconds
+    const statsInterval = setInterval(() => {
+      if (startupComplete) {
+        console.log(`[CAMERA] Frame capture stats: sent=${framesSent}, errors=${frameErrors}, isCapturing=${isCapturing}`);
+      }
+    }, 3000);
+
     const captureInterval = setInterval(async () => {
       // Wait for startup delay
-      if (!startupComplete) return;
+      if (!startupComplete) {
+        console.log('[CAMERA] Frame capture: waiting for startup delay...');
+        return;
+      }
 
       // Skip if previous capture is still in progress
-      if (isCapturing) return;
+      if (isCapturing) {
+        console.log('[CAMERA] Frame capture: previous capture still in progress, skipping');
+        return;
+      }
 
       isCapturing = true;
+      const attemptNum = framesSent + frameErrors + 1;
+      console.log(`[CAMERA] Capture attempt ${attemptNum}: calling takeSnapshot...`);
       try {
         const snapshotPath = await takeSnapshot();
+        console.log(`[CAMERA] Capture attempt ${attemptNum}: snapshotPath=${snapshotPath ? 'got path' : 'NULL/undefined'}`);
 
         if (snapshotPath) {
           // Ensure path has file:// prefix for expo-file-system
@@ -407,7 +583,7 @@ export default function CameraScreen() {
               encoding: FileSystem.EncodingType.Base64,
             });
           } catch {
-            // Ignore read errors
+            frameErrors++;
           }
 
           if (base64) {
@@ -422,20 +598,28 @@ export default function CameraScreen() {
           } catch {
             // Ignore cleanup errors
           }
+        } else {
+          frameErrors++;
         }
-      } catch {
-        // Ignore capture errors during transitions
+      } catch (error) {
+        frameErrors++;
+        console.log(`[CAMERA] Frame capture error:`, error);
       } finally {
         isCapturing = false;
       }
     }, 125); // ~8 FPS
 
     return () => {
-      console.log('[CAMERA] Stopping snapshot frame capture');
+      console.log(`[CAMERA] *** Frame capture CLEANUP triggered! *** Total sent=${framesSent}, errors=${frameErrors}`);
+      console.log(`[CAMERA] Cleanup reason - check which dependency changed:`);
+      console.log(`[CAMERA]   isRemoteConnected=${isRemoteConnected}, isDataChannelReady=${isDataChannelReady}`);
+      console.log(`[CAMERA]   isCameraInitialized=${isCameraInitialized}, isRecording=${cameraState.isRecording}`);
+      console.log(`[CAMERA]   currentStreamMode=${currentStreamMode}`);
       clearTimeout(captureStartTimer);
       clearInterval(captureInterval);
+      clearInterval(statsInterval);
     };
-  }, [isRemoteConnected, isDataChannelReady, isCameraInitialized, cameraState.isRecording, takeSnapshot]);
+  }, [isRemoteConnected, isDataChannelReady, isCameraInitialized, cameraState.isRecording, takeSnapshot, currentStreamMode]);
 
   // Navigate to remote screen
   const handleGoToRemote = () => {
@@ -527,7 +711,7 @@ export default function CameraScreen() {
           ref={cameraRef}
           style={StyleSheet.absoluteFill}
           device={device}
-          isActive={isFocused && !cameraState.isRecording}
+          isActive={cameraIsActive}
           photo={true}
           video={true}
           audio={true}

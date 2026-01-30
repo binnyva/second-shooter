@@ -174,3 +174,10 @@ Both platforms require camera, microphone, and photo library permissions.
 - **Two physical devices required** - WebRTC and camera don't work in simulators
 - Test on same WiFi network first, then different networks
 - Firebase project must be set up with Firestore enabled
+
+## Logging Guidelines
+
+- **Never log base64 content or data URIs** - Frame data contains large base64 strings that make logs unusable
+- When logging frame-related state, use boolean checks (e.g., `!!frameData`) instead of the actual content
+- Log frame metadata like `frameId` or `data.length` instead of the full `data` string
+- Example: `console.log(\`Frame received: id=${frame.frameId}, size=${frame.data?.length}\`)` NOT `console.log(\`Frame: ${frame.data}\`)`

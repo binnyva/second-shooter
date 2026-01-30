@@ -88,11 +88,17 @@ class WebRTCService {
 
     // Handle incoming tracks (remote stream)
     (this.peerConnection as any).ontrack = (event: RTCTrackEvent) => {
+      console.log(`[WebRTC] ontrack event: track kind=${event.track?.kind}, id=${event.track?.id}, readyState=${event.track?.readyState}`);
+      console.log(`[WebRTC] ontrack event: streams count=${event.streams?.length}`);
       if (event.streams && event.streams[0]) {
         this.remoteStream = event.streams[0];
+        const tracks = this.remoteStream.getTracks();
+        console.log(`[WebRTC] ontrack: Remote stream has ${tracks.length} tracks:`, tracks.map(t => `${t.kind}:${t.id}:${t.readyState}`));
         if (this.onRemoteStreamCallback) {
           this.onRemoteStreamCallback(event.streams[0]);
         }
+      } else {
+        console.log(`[WebRTC] ontrack: No streams in event`);
       }
     };
 
@@ -277,7 +283,15 @@ class WebRTCService {
   // Get local media stream for camera
   // zoom parameter helps select the appropriate physical lens (0.5 = ultra-wide, 1 = wide, 2+ = telephoto)
   async getLocalStream(facingMode: 'front' | 'back' = 'back', zoom: number = 1): Promise<MediaStream> {
+    console.log(`[WebRTC] getLocalStream called: facingMode=${facingMode}, zoom=${zoom}`);
+    console.log(`[WebRTC] Current localStream exists: ${!!this.localStream}`);
+    if (this.localStream) {
+      const tracks = this.localStream.getTracks();
+      console.log(`[WebRTC] Existing stream has ${tracks.length} tracks:`, tracks.map(t => `${t.kind}:${t.readyState}`));
+    }
+
     const sourceInfos = await mediaDevices.enumerateDevices() as any[];
+    console.log(`[WebRTC] Found ${sourceInfos.length} media devices`);
 
     // Find all video devices matching the facing mode
     const targetFacing = facingMode === 'front' ? 'front' : 'environment';
@@ -353,9 +367,17 @@ class WebRTCService {
       constraints.video.advanced = [{ zoom: zoom }];
     }
 
-    const stream = await mediaDevices.getUserMedia(constraints);
-    this.localStream = stream as MediaStream;
-    return this.localStream;
+    console.log(`[WebRTC] Calling getUserMedia with constraints:`, JSON.stringify(constraints));
+    try {
+      const stream = await mediaDevices.getUserMedia(constraints);
+      this.localStream = stream as MediaStream;
+      const tracks = this.localStream.getTracks();
+      console.log(`[WebRTC] getUserMedia success: got ${tracks.length} tracks:`, tracks.map(t => `${t.kind}:${t.id}:${t.readyState}`));
+      return this.localStream;
+    } catch (error) {
+      console.error(`[WebRTC] getUserMedia FAILED:`, error);
+      throw error;
+    }
   }
 
   // Add local stream to peer connection
@@ -364,9 +386,13 @@ class WebRTCService {
       throw new Error('Peer connection not initialized');
     }
 
-    stream.getVideoTracks().forEach((track) => {
+    const videoTracks = stream.getVideoTracks();
+    console.log(`[WebRTC] addLocalStream: Adding ${videoTracks.length} video tracks to peer connection`);
+    videoTracks.forEach((track, i) => {
+      console.log(`[WebRTC] addLocalStream: Track ${i}: id=${track.id}, readyState=${track.readyState}`);
       this.peerConnection!.addTrack(track, stream);
     });
+    console.log(`[WebRTC] addLocalStream: Complete. Senders count: ${this.peerConnection.getSenders().length}`);
   }
 
   // Send command via data channel
@@ -390,9 +416,14 @@ class WebRTCService {
   }
 
   // Send frame data via data channel (for frame-based streaming)
+  private framesSentCount = 0;
+  private framesFailedCount = 0;
   sendFrameData(frameId: number, base64Data: string, timestamp: number): void {
     if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-      // Silently skip - frames are expected to be dropped occasionally
+      this.framesFailedCount++;
+      if (this.framesFailedCount % 10 === 1) {
+        console.log(`[WebRTC] sendFrameData: Data channel not ready (state=${this.dataChannel?.readyState}), failed=${this.framesFailedCount}`);
+      }
       return;
     }
 
@@ -404,10 +435,16 @@ class WebRTCService {
     };
 
     try {
+      const msgSize = JSON.stringify(frameDataMessage).length;
       this.dataChannel.send(JSON.stringify(frameDataMessage));
+      this.framesSentCount++;
+      // Log every 10 frames
+      if (this.framesSentCount % 10 === 1) {
+        console.log(`[WebRTC] sendFrameData: Sent frame ${frameId}, size=${msgSize}, total sent=${this.framesSentCount}`);
+      }
     } catch (error) {
-      // Frame send failed - expected occasionally due to data channel backpressure
-      console.debug('Frame send failed:', error);
+      this.framesFailedCount++;
+      console.log(`[WebRTC] sendFrameData FAILED: frameId=${frameId}, error=`, error);
     }
   }
 
@@ -458,34 +495,48 @@ class WebRTCService {
 
   // Pause local stream (stops video track to release camera hardware)
   pauseLocalStream(): void {
+    console.log(`[WebRTC] pauseLocalStream called. localStream exists: ${!!this.localStream}`);
     if (this.localStream) {
-      this.localStream.getVideoTracks().forEach((track) => track.stop());
+      const tracks = this.localStream.getVideoTracks();
+      console.log(`[WebRTC] pauseLocalStream: Stopping ${tracks.length} video tracks`);
+      tracks.forEach((track, i) => {
+        console.log(`[WebRTC] pauseLocalStream: Track ${i} before stop: id=${track.id}, readyState=${track.readyState}`);
+        track.stop();
+        console.log(`[WebRTC] pauseLocalStream: Track ${i} after stop: readyState=${track.readyState}`);
+      });
+    } else {
+      console.log(`[WebRTC] pauseLocalStream: No local stream to pause`);
     }
   }
 
   // Resume local stream (gets new stream and replaces tracks)
   // zoom parameter helps select the appropriate physical lens
   async resumeLocalStream(facingMode: 'front' | 'back' = 'back', zoom: number = 1): Promise<void> {
+    console.log(`[WebRTC] resumeLocalStream called: facingMode=${facingMode}, zoom=${zoom}`);
     if (!this.peerConnection) {
-      console.error('Peer connection not initialized for stream resume');
+      console.error('[WebRTC] resumeLocalStream: Peer connection not initialized');
       return;
     }
 
     try {
       // Get a new stream with the appropriate lens
+      console.log(`[WebRTC] resumeLocalStream: Getting new local stream...`);
       const newStream = await this.getLocalStream(facingMode, zoom);
 
       // Replace the video track in the peer connection
       const senders = this.peerConnection.getSenders();
       const videoTrack = newStream.getVideoTracks()[0];
+      console.log(`[WebRTC] resumeLocalStream: Got ${senders.length} senders, new videoTrack: ${videoTrack?.id}, readyState: ${videoTrack?.readyState}`);
 
       for (const sender of senders) {
         if (sender.track?.kind === 'video' && videoTrack) {
+          console.log(`[WebRTC] resumeLocalStream: Replacing track on sender. Old: ${sender.track?.id}, New: ${videoTrack.id}`);
           await sender.replaceTrack(videoTrack);
+          console.log(`[WebRTC] resumeLocalStream: Track replaced successfully`);
         }
       }
     } catch (error) {
-      console.error('Error resuming local stream:', error);
+      console.error('[WebRTC] resumeLocalStream error:', error);
     }
   }
 
