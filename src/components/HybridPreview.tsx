@@ -118,10 +118,13 @@ export function HybridPreview({
   const prevStreamRef = useRef(stream);
   useEffect(() => {
     const streamChanged = stream !== prevStreamRef.current;
-    if (streamMode !== prevStreamModeRef.current || hasContent !== prevHasContentRef.current || streamChanged) {
+    // Use !! to convert to boolean - NEVER log actual frame data/URIs (per CLAUDE.md guidelines)
+    const prevHasContentBool = !!prevHasContentRef.current;
+    const hasContentBool = !!hasContent;
+    if (streamMode !== prevStreamModeRef.current || hasContentBool !== prevHasContentBool || streamChanged) {
       console.log(`[HybridPreview] === State Change ===`);
       console.log(`[HybridPreview] streamMode: ${prevStreamModeRef.current} -> ${streamMode}`);
-      console.log(`[HybridPreview] hasContent: ${prevHasContentRef.current} -> ${hasContent}`);
+      console.log(`[HybridPreview] hasContent: ${prevHasContentBool} -> ${hasContentBool}`);
       console.log(`[HybridPreview] stream exists: ${!!prevStreamRef.current} -> ${!!stream}`);
       if (stream) {
         const tracks = stream.getTracks();
