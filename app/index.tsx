@@ -134,9 +134,37 @@ export default function CameraScreen() {
     switch (command.type) {
       case 'TAKE_PHOTO':
         try {
+          // If WebRTC is using the camera, we need to temporarily release it
+          // so vision-camera can take the photo
+          const wasUsingWebRTC = streamModeRef.current === 'webrtc';
+          if (wasUsingWebRTC) {
+            console.log('[CAMERA] TAKE_PHOTO: Pausing WebRTC stream to release camera...');
+            pauseLocalStream();
+            setIsWebRTCUsingCamera(false);
+            // Wait for camera hardware to be released and vision-camera to initialize
+            // This needs sufficient time for: React re-render + camera hardware release + vision-camera init
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+
           await takePhoto();
+
+          // Resume WebRTC stream if it was active
+          if (wasUsingWebRTC) {
+            console.log('[CAMERA] TAKE_PHOTO: Resuming WebRTC stream...');
+            setIsWebRTCUsingCamera(true);
+            await new Promise(resolve => setTimeout(resolve, 200));
+            await resumeLocalStream(facingRef.current);
+          }
+
           sendResponse({ type: 'PHOTO_TAKEN', success: true });
         } catch (error) {
+          // Try to resume WebRTC even if photo failed
+          if (streamModeRef.current === 'webrtc') {
+            console.log('[CAMERA] TAKE_PHOTO: Error occurred, resuming WebRTC stream...');
+            setIsWebRTCUsingCamera(true);
+            await new Promise(resolve => setTimeout(resolve, 200));
+            await resumeLocalStream(facingRef.current);
+          }
           sendResponse({ type: 'PHOTO_TAKEN', success: false, error: String(error) });
         }
         break;
