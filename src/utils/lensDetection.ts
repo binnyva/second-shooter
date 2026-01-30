@@ -36,13 +36,16 @@ export function detectLenses(
   });
 
   // Get physical devices from the camera device
-  const physicalDevices = device.physicalDevices || [];
+  // De-duplicate the array as some devices (e.g., Pixel 9 Pro) report duplicate entries
+  const rawPhysicalDevices = device.physicalDevices || [];
+  const physicalDevices = [...new Set(rawPhysicalDevices)];
   const minZoom = device.minZoom ?? 1;
   const maxZoom = device.maxZoom ?? 10;
   const neutralZoom = device.neutralZoom ?? 1;
 
   console.log('[LensDetection] Device:', device.id, '(' + device.position.toUpperCase() + ')', device.name);
-  console.log('[LensDetection] Physical devices:', physicalDevices);
+  console.log('[LensDetection] Physical devices (raw):', rawPhysicalDevices);
+  console.log('[LensDetection] Physical devices (unique):', physicalDevices);
   console.log('[LensDetection] Zoom range:', minZoom, '-', maxZoom, 'neutral:', neutralZoom);
   console.log('[LensDetection] hasFlash:', device.hasFlash, 'hasTorch:', device.hasTorch);
 
@@ -51,11 +54,12 @@ export function detectLenses(
   const hasWide = physicalDevices.includes('wide-angle-camera');
 
   // Count telephoto cameras - devices like Samsung S23 Ultra have multiple
+  // After de-duplication, this gives 1 for most devices with a single telephoto
   const telephotoCount = physicalDevices.filter(
     (d) => d === 'telephoto-camera'
   ).length;
 
-  console.log('[LensDetection] Telephoto camera count:', telephotoCount);
+  console.log('[LensDetection] Telephoto camera count:', telephotoCount, 'hasUltraWide:', hasUltraWide);
 
   // Ultra-wide lens (typically 0.5x or 0.6x)
   if (hasUltraWide && minZoom < 1) {
@@ -79,7 +83,8 @@ export function detectLenses(
 
   // Telephoto lenses - detect all available zoom factors
   if (telephotoCount > 0) {
-    const telephotoZooms = detectTelephotoZooms(device, telephotoCount);
+    const telephotoZooms = detectTelephotoZooms(device, telephotoCount, hasUltraWide);
+    console.log('[LensDetection] Detected telephoto zooms:', telephotoZooms);
     telephotoZooms.forEach((zoom, index) => {
       lenses.push({
         id: `telephoto-${index + 1}`,
@@ -129,14 +134,15 @@ export function detectLenses(
  * Attempts to detect the telephoto zoom factors from device characteristics.
  * Handles devices with multiple telephoto cameras (like Samsung S23 Ultra with 3x and 10x).
  */
-function detectTelephotoZooms(device: CameraDevice, telephotoCount: number): number[] {
+function detectTelephotoZooms(device: CameraDevice, telephotoCount: number, hasUltraWide: boolean): number[] {
   const maxZoom = device.maxZoom ?? 10;
+  const minZoom = device.minZoom ?? 1;
 
   // Common telephoto configurations based on maxZoom and telephoto count:
   // Single telephoto:
-  // - 2x telephoto: maxZoom often around 8-10x
-  // - 3x telephoto: maxZoom often around 15-30x
-  // - 5x telephoto: maxZoom often around 50-100x
+  // - 2x telephoto: maxZoom often around 8-16x (2x × 4-8x digital)
+  // - 3x telephoto: maxZoom often around 15-30x (3x × 5-10x digital)
+  // - 5x telephoto: maxZoom often around 30-50x (5x × 6-10x digital)
   //
   // Dual telephoto (Samsung S21 Ultra, S22 Ultra, S23 Ultra, S24 Ultra):
   // - 3x + 10x: maxZoom typically 100x (10x digital on 10x optical)
@@ -163,8 +169,15 @@ function detectTelephotoZooms(device: CameraDevice, telephotoCount: number): num
   }
 
   // Single telephoto camera
+  // Flagship phones with ultra-wide + single telephoto typically have 5x
+  // (Pixel 7 Pro, Pixel 8 Pro, Pixel 9 Pro, iPhone 15 Pro Max, etc.)
+  // Mid-range phones typically have 2x or 3x telephoto
   if (maxZoom >= 50) {
-    return [5]; // 5x telephoto (like Samsung S21 Ultra single, Pixel 7 Pro)
+    return [5]; // 5x telephoto with high digital zoom
+  } else if (hasUltraWide && minZoom < 1 && maxZoom >= 20) {
+    // Flagship pattern: ultra-wide + single telephoto + maxZoom 20-50
+    // This is typically a 5x telephoto (e.g., Pixel 9 Pro: maxZoom=30, 5x×6=30)
+    return [5];
   } else if (maxZoom >= 15) {
     return [3]; // 3x telephoto (like iPhone 13 Pro, Pixel 6 Pro)
   } else {
