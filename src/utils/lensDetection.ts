@@ -37,29 +37,18 @@ export function detectLenses(
 
   // Get physical devices from the camera device
   // De-duplicate the array as some devices (e.g., Pixel 9 Pro) report duplicate entries
-  const rawPhysicalDevices = device.physicalDevices || [];
-  const physicalDevices = [...new Set(rawPhysicalDevices)];
+  const physicalDevices = [...new Set(device.physicalDevices || [])];
   const minZoom = device.minZoom ?? 1;
   const maxZoom = device.maxZoom ?? 10;
-  const neutralZoom = device.neutralZoom ?? 1;
-
-  console.log('[LensDetection] Device:', device.id, '(' + device.position.toUpperCase() + ')', device.name);
-  console.log('[LensDetection] Physical devices (raw):', rawPhysicalDevices);
-  console.log('[LensDetection] Physical devices (unique):', physicalDevices);
-  console.log('[LensDetection] Zoom range:', minZoom, '-', maxZoom, 'neutral:', neutralZoom);
-  console.log('[LensDetection] hasFlash:', device.hasFlash, 'hasTorch:', device.hasTorch);
 
   // Build lens list based on physical devices
   const hasUltraWide = physicalDevices.includes('ultra-wide-angle-camera');
-  const hasWide = physicalDevices.includes('wide-angle-camera');
 
   // Count telephoto cameras - devices like Samsung S23 Ultra have multiple
   // After de-duplication, this gives 1 for most devices with a single telephoto
   const telephotoCount = physicalDevices.filter(
     (d) => d === 'telephoto-camera'
   ).length;
-
-  console.log('[LensDetection] Telephoto camera count:', telephotoCount, 'hasUltraWide:', hasUltraWide);
 
   // Ultra-wide lens (typically 0.5x or 0.6x)
   if (hasUltraWide && minZoom < 1) {
@@ -84,7 +73,6 @@ export function detectLenses(
   // Telephoto lenses - detect all available zoom factors
   if (telephotoCount > 0) {
     const telephotoZooms = detectTelephotoZooms(device, telephotoCount, hasUltraWide);
-    console.log('[LensDetection] Detected telephoto zooms:', telephotoZooms);
     telephotoZooms.forEach((zoom, index) => {
       lenses.push({
         id: `telephoto-${index + 1}`,
@@ -169,19 +157,28 @@ function detectTelephotoZooms(device: CameraDevice, telephotoCount: number, hasU
   }
 
   // Single telephoto camera
-  // Flagship phones with ultra-wide + single telephoto typically have 5x
-  // (Pixel 7 Pro, Pixel 8 Pro, Pixel 9 Pro, iPhone 15 Pro Max, etc.)
-  // Mid-range phones typically have 2x or 3x telephoto
-  if (maxZoom >= 50) {
-    return [5]; // 5x telephoto with high digital zoom
-  } else if (hasUltraWide && minZoom < 1 && maxZoom >= 20) {
-    // Flagship pattern: ultra-wide + single telephoto + maxZoom 20-50
-    // This is typically a 5x telephoto (e.g., Pixel 9 Pro: maxZoom=30, 5x×6=30)
-    return [5];
-  } else if (maxZoom >= 15) {
-    return [3]; // 3x telephoto (like iPhone 13 Pro, Pixel 6 Pro)
+  // Estimate optical zoom from maxZoom by assuming typical digital zoom ranges:
+  // - High-end flagships: 5x-10x digital zoom on top of optical
+  // - Most phones: 4x-8x digital zoom on top of optical
+  //
+  // Examples:
+  // - Pixel 9 Pro: 5x optical, maxZoom ~30 (5x × 6 digital)
+  // - iPhone 15 Pro Max: 5x optical, maxZoom ~25 (5x × 5 digital)
+  // - Pixel 6 Pro: 4x optical, maxZoom ~20 (4x × 5 digital)
+  // - Most mid-range: 2x optical, maxZoom ~8-16 (2x × 4-8 digital)
+
+  // Calculate estimated optical zoom: maxZoom / assumed_digital_zoom
+  // Use conservative digital zoom estimate of 6x for calculation
+  const estimatedOpticalZoom = maxZoom / 6;
+
+  if (estimatedOpticalZoom >= 4.5) {
+    return [5]; // 5x telephoto (maxZoom ~27+)
+  } else if (estimatedOpticalZoom >= 3.5) {
+    return [4]; // 4x telephoto (maxZoom ~21-26)
+  } else if (estimatedOpticalZoom >= 2.5) {
+    return [3]; // 3x telephoto (maxZoom ~15-20)
   } else {
-    return [2]; // 2x telephoto (most common)
+    return [2]; // 2x telephoto (maxZoom < 15)
   }
 }
 

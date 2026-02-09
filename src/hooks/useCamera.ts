@@ -90,7 +90,6 @@ export function useCamera(initialState?: Partial<CameraState>) {
   // Take a quick snapshot for preview streaming (doesn't save to gallery)
   const takeSnapshot = useCallback(async (): Promise<string | null> => {
     if (!cameraRef.current) {
-      console.log('[takeSnapshot] No camera ref');
       return null;
     }
 
@@ -99,8 +98,7 @@ export function useCamera(initialState?: Partial<CameraState>) {
         quality: 50, // Lower quality for faster streaming
       });
       return snapshot.path;
-    } catch (error) {
-      console.log('[takeSnapshot] Error:', error);
+    } catch {
       return null;
     }
   }, []);
