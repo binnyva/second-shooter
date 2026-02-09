@@ -203,6 +203,7 @@ class WebRTCService {
       'STATE_UPDATE',
       'ERROR',
       'FRAME_DATA',
+      'PHOTO_DATA',
     ].includes(m.type || '');
   }
 

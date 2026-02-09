@@ -149,6 +149,23 @@ export default function CameraScreen() {
             await new Promise(resolve => setTimeout(resolve, 500));
           }
 
+          // Take a snapshot FIRST for preview (captures what's about to be photographed)
+          // This is small enough to send over the data channel
+          let previewBase64: string | null = null;
+          try {
+            const snapshotPath = await takeSnapshot();
+            if (snapshotPath) {
+              const fileUri = snapshotPath.startsWith('file://') ? snapshotPath : `file://${snapshotPath}`;
+              previewBase64 = await FileSystem.readAsStringAsync(fileUri, {
+                encoding: FileSystem.EncodingType.Base64,
+              });
+              await FileSystem.deleteAsync(fileUri, { idempotent: true });
+            }
+          } catch (snapshotError) {
+            console.error('Error taking preview snapshot:', snapshotError);
+          }
+
+          // Now take the actual full-resolution photo
           await takePhoto();
 
           // Resume WebRTC stream if it was active
@@ -159,6 +176,25 @@ export default function CameraScreen() {
           }
 
           sendResponse({ type: 'PHOTO_TAKEN', success: true });
+
+          // Send the preview to remote and update local thumbnail
+          setTimeout(async () => {
+            try {
+              // Update last photo URI for local display
+              const photo = await mediaService.getLastPhoto();
+              if (photo) {
+                setLastPhotoUri(photo.uri);
+              }
+
+              // Send the preview snapshot to remote
+              if (previewBase64) {
+                console.log(`[CAMERA] Sending photo preview to remote: ${previewBase64.length} bytes`);
+                sendResponse({ type: 'PHOTO_DATA', data: previewBase64, timestamp: Date.now() });
+              }
+            } catch (photoError) {
+              console.error('Error sending photo to remote:', photoError);
+            }
+          }, 500);
         } catch (error) {
           // Try to resume WebRTC even if photo failed
           if (streamModeRef.current === 'webrtc') {

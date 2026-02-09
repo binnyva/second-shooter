@@ -46,6 +46,13 @@ export interface FrameDataMessage {
   timestamp: number;
 }
 
+// Photo data message sent from camera to remote after taking a photo
+export interface PhotoDataMessage {
+  type: 'PHOTO_DATA';
+  data: string;  // base64 JPEG
+  timestamp: number;
+}
+
 // Responses sent from camera to remote device via data channel
 export type Response =
   | { type: 'PHOTO_TAKEN'; success: boolean; error?: string }
@@ -53,7 +60,8 @@ export type Response =
   | { type: 'RECORDING_STOPPED'; success: boolean; error?: string }
   | { type: 'STATE_UPDATE'; state: CameraState; lenses?: LensInfo[]; videoNeedsRotation?: boolean; previewZoomLimited?: boolean; streamMode?: StreamMode }
   | { type: 'ERROR'; message: string }
-  | FrameDataMessage;
+  | FrameDataMessage
+  | PhotoDataMessage;
 
 // WebRTC connection states
 export type ConnectionState =

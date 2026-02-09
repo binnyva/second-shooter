@@ -11,11 +11,12 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { QRCodeScanner } from '../src/components/QRCodeScanner';
 import { HybridPreview } from '../src/components/HybridPreview';
 import { CameraControls } from '../src/components/CameraControls';
+import { PhotoViewer } from '../src/components/PhotoViewer';
 import { useSignaling } from '../src/hooks/useSignaling';
 import { usePeerConnection } from '../src/hooks/usePeerConnection';
 import { useSettings } from '../src/hooks/useSettings';
 import { webRTCService } from '../src/services/WebRTCService';
-import { CameraState, Response, FlashMode, CaptureMode, LensInfo, StreamMode, FrameDataMessage } from '../src/types';
+import { CameraState, Response, FlashMode, CaptureMode, LensInfo, StreamMode, FrameDataMessage, PhotoDataMessage } from '../src/types';
 
 const DEFAULT_STATE: CameraState = {
   zoom: 1,
@@ -52,6 +53,10 @@ export default function RemoteScreen() {
   const [streamMode, setStreamMode] = useState<StreamMode>('webrtc');
   const [latestFrame, setLatestFrame] = useState<FrameDataMessage | null>(null);
 
+  // Last photo received from camera device
+  const [lastRemotePhotoUri, setLastRemotePhotoUri] = useState<string | null>(null);
+  const [showPhotoViewer, setShowPhotoViewer] = useState(false);
+
   // Signaling
   const {
     sessionId,
@@ -79,6 +84,14 @@ export default function RemoteScreen() {
     // Handle frame data separately (high frequency)
     if (response.type === 'FRAME_DATA') {
       handleFrameData(response);
+      return;
+    }
+
+    // Handle photo data (don't log base64 content)
+    if (response.type === 'PHOTO_DATA') {
+      console.log(`[REMOTE] Received photo data: ${response.data?.length || 0} bytes`);
+      const photoUri = `data:image/jpeg;base64,${response.data}`;
+      setLastRemotePhotoUri(photoUri);
       return;
     }
 
@@ -283,6 +296,13 @@ export default function RemoteScreen() {
     sendCommand({ type: 'SET_ZOOM', level: zoom });
   }, [sendCommand]);
 
+  // Handle opening photo viewer
+  const handleOpenPhotoViewer = useCallback(() => {
+    if (lastRemotePhotoUri) {
+      setShowPhotoViewer(true);
+    }
+  }, [lastRemotePhotoUri]);
+
   // Request initial state when data channel becomes ready
   useEffect(() => {
     if (isDataChannelReady && !showScanner) {
@@ -331,6 +351,8 @@ export default function RemoteScreen() {
             onZoomChange={handleZoomChange}
             onCaptureModeChange={handleCaptureModeChange}
             disabled={connectionState !== 'connected'}
+            lastPhotoUri={lastRemotePhotoUri ?? undefined}
+            onOpenGallery={handleOpenPhotoViewer}
             onSettingsPress={handleSettingsPress}
             onQRPress={handleQRPress}
             onModeToggle={handleModeToggle}
@@ -338,6 +360,13 @@ export default function RemoteScreen() {
             availableLenses={remoteLenses}
             currentMode="remote"
             previewZoomLimited={previewZoomLimited}
+          />
+
+          {/* Photo viewer modal */}
+          <PhotoViewer
+            visible={showPhotoViewer}
+            photoUri={lastRemotePhotoUri}
+            onClose={() => setShowPhotoViewer(false)}
           />
 
           {/* Session info */}
