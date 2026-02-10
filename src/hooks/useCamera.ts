@@ -64,25 +64,43 @@ export function useCamera(initialState?: Partial<CameraState>) {
     updateState({ captureMode });
   }, [updateState]);
 
-  // Take photo
+  // Guard against concurrent takePhoto calls (e.g. double volume button events)
+  const isCapturingRef = useRef(false);
+
+  // Take photo with retry for Android ImageCapture binding race
   const takePhoto = useCallback(async (): Promise<PhotoFile | null> => {
     if (!cameraRef.current) {
       console.error('Camera ref not set');
       return null;
     }
 
-    try {
-      const photo = await cameraRef.current.takePhoto({
+    if (isCapturingRef.current) {
+      return null;
+    }
+    isCapturingRef.current = true;
+
+    const capture = async () => {
+      const photo = await cameraRef.current!.takePhoto({
         flash: state.flash === 'auto' ? 'on' : state.flash,
         enableShutterSound: false,
       });
-
-      // Save to gallery
       await mediaService.savePhotoToGallery(photo);
-
       return photo;
+    };
+
+    try {
+      return await capture();
     } catch (error) {
+      // Android's ImageCapture may not be fully bound yet after camera reactivation.
+      // Retry once after a brief delay.
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes('Not bound to a valid Camera') || msg.includes('ImageCapture')) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return await capture();
+      }
       throw error;
+    } finally {
+      isCapturingRef.current = false;
     }
   }, [state.flash]);
 

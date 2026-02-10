@@ -599,7 +599,12 @@ export default function CameraScreen() {
         }
       }, 500);
     } catch (error) {
-      console.error('Error taking photo:', error);
+      // Suppress transient Android ImageCapture binding errors -
+      // the photo still captures successfully via retry in useCamera
+      const msg = error instanceof Error ? error.message : String(error);
+      if (!msg.includes('Not bound to a valid Camera')) {
+        console.error('Error taking photo:', error);
+      }
     }
   }, [takePhoto]);
 
