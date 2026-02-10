@@ -15,6 +15,7 @@ import { PhotoViewer } from '../src/components/PhotoViewer';
 import { useSignaling } from '../src/hooks/useSignaling';
 import { usePeerConnection } from '../src/hooks/usePeerConnection';
 import { useSettings } from '../src/hooks/useSettings';
+import { useVolumeShutter } from '../src/hooks/useVolumeShutter';
 import { webRTCService } from '../src/services/WebRTCService';
 import { CameraState, Response, FlashMode, CaptureMode, LensInfo, StreamMode, FrameDataMessage, PhotoDataMessage } from '../src/types';
 
@@ -302,6 +303,22 @@ export default function RemoteScreen() {
       setShowPhotoViewer(true);
     }
   }, [lastRemotePhotoUri]);
+
+  // Volume button shutter
+  const handleVolumeShutter = useCallback(() => {
+    if (connectionState !== 'connected') return;
+    if (remoteState.captureMode === 'photo') {
+      handleTakePhoto();
+    } else {
+      if (remoteState.isRecording) {
+        handleStopRecording();
+      } else {
+        handleStartRecording();
+      }
+    }
+  }, [connectionState, remoteState.captureMode, remoteState.isRecording, handleTakePhoto, handleStartRecording, handleStopRecording]);
+
+  useVolumeShutter({ onShutterPress: handleVolumeShutter, enabled: !showScanner });
 
   // Request initial state when data channel becomes ready
   useEffect(() => {

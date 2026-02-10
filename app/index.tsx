@@ -25,6 +25,7 @@ import { useCamera } from '../src/hooks/useCamera';
 import { useSignaling } from '../src/hooks/useSignaling';
 import { usePeerConnection } from '../src/hooks/usePeerConnection';
 import { useSettings } from '../src/hooks/useSettings';
+import { useVolumeShutter } from '../src/hooks/useVolumeShutter';
 import { requestMediaLibraryPermission } from '../src/utils/permissions';
 import { detectLenses } from '../src/utils/lensDetection';
 import { determineStreamMode } from '../src/utils/streamMode';
@@ -122,10 +123,20 @@ export default function CameraScreen() {
 
   // Track camera initialization state
   const [isCameraInitialized, setIsCameraInitialized] = useState(false);
+  // Resolve function for awaiting camera initialization
+  const cameraInitResolveRef = useRef<(() => void) | null>(null);
 
   // Handle camera becoming active again
   const handleCameraInitialized = useCallback(() => {
     setIsCameraInitialized(true);
+
+    // Resolve any pending initialization promise after a brief delay
+    // to allow Android's ImageCapture use case to fully bind
+    if (cameraInitResolveRef.current) {
+      const resolve = cameraInitResolveRef.current;
+      cameraInitResolveRef.current = null;
+      setTimeout(resolve, 300);
+    }
 
     // Clear zoom override after a brief delay to apply the actual target zoom
     // This works around vision-camera not respecting zoom prop at mount time
@@ -135,6 +146,15 @@ export default function CameraScreen() {
       }, 100);
     }
   }, [zoomOverride]);
+
+  // Returns a promise that resolves when camera finishes initializing
+  const waitForCameraInit = useCallback(() => {
+    return new Promise<void>((resolve) => {
+      cameraInitResolveRef.current = resolve;
+      // Safety timeout to avoid hanging forever
+      setTimeout(resolve, 3000);
+    });
+  }, []);
 
   // Handle incoming commands from remote
   const handleCommand = useCallback(async (command: Command) => {
@@ -146,7 +166,7 @@ export default function CameraScreen() {
           if (wasUsingWebRTC) {
             pauseLocalStream();
             setIsWebRTCUsingCamera(false);
-            await new Promise(resolve => setTimeout(resolve, 500));
+            await waitForCameraInit();
           }
 
           // Take a snapshot FIRST for preview (captures what's about to be photographed)
@@ -598,6 +618,46 @@ export default function CameraScreen() {
       await actuallyTakePhoto();
     }
   };
+
+  // Volume button shutter - must handle WebRTC camera release like remote TAKE_PHOTO command
+  const volumeShutterBusyRef = useRef(false);
+  const handleVolumeShutter = useCallback(async () => {
+    if (volumeShutterBusyRef.current) return;
+    volumeShutterBusyRef.current = true;
+    try {
+      if (cameraState.captureMode === 'photo') {
+        const wasUsingWebRTC = streamModeRef.current === 'webrtc';
+        if (wasUsingWebRTC) {
+          pauseLocalStream();
+          setIsWebRTCUsingCamera(false);
+          await waitForCameraInit();
+        }
+
+        if (settings.timer > 0) {
+          setTimerSeconds(settings.timer);
+          setShowTimerCountdown(true);
+        } else {
+          await actuallyTakePhoto();
+        }
+
+        if (wasUsingWebRTC) {
+          setIsWebRTCUsingCamera(true);
+          await new Promise(resolve => setTimeout(resolve, 200));
+          await resumeLocalStream(facingRef.current);
+        }
+      } else {
+        if (cameraState.isRecording) {
+          stopRecording();
+        } else {
+          startRecording();
+        }
+      }
+    } finally {
+      volumeShutterBusyRef.current = false;
+    }
+  }, [cameraState.captureMode, cameraState.isRecording, settings.timer, actuallyTakePhoto, startRecording, stopRecording, pauseLocalStream, resumeLocalStream, waitForCameraInit]);
+
+  useVolumeShutter({ onShutterPress: handleVolumeShutter, enabled: !showQR });
 
   if (!hasCameraPermission || !hasMicPermission) {
     return (

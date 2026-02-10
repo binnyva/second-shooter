@@ -82,7 +82,6 @@ export function useCamera(initialState?: Partial<CameraState>) {
 
       return photo;
     } catch (error) {
-      console.error('Error taking photo:', error);
       throw error;
     }
   }, [state.flash]);

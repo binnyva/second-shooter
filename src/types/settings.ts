@@ -35,6 +35,7 @@ export interface AppSettings {
 
   // General settings
   keepScreenAwake: boolean;
+  volumeShutter: boolean;
 }
 
 // Default settings
@@ -47,4 +48,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   galleryApp: 'system-default',
   previewQuality: 'medium',
   keepScreenAwake: true,
+  volumeShutter: true,
 };

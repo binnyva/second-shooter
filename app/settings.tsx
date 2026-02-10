@@ -271,6 +271,15 @@ export default function SettingsScreen() {
               thumbColor="#fff"
             />
           </View>
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>Volume Button Shutter</Text>
+            <Switch
+              value={settings.volumeShutter}
+              onValueChange={(value) => updateSetting('volumeShutter', value)}
+              trackColor={{ false: '#555', true: '#4cd964' }}
+              thumbColor="#fff"
+            />
+          </View>
         </View>
       </ScrollView>
     </View>
