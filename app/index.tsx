@@ -648,6 +648,14 @@ export default function CameraScreen() {
 
         {/* Grid overlay */}
         <GridOverlay type={settings.gridOverlay} />
+
+        {/* Frozen preview notice when WebRTC is using the camera */}
+        {isWebRTCUsingCamera && (
+          <View style={styles.frozenOverlay}>
+            <Text style={styles.frozenText}>Preview paused</Text>
+            <Text style={styles.frozenSubtext}>Use remote device to see live preview</Text>
+          </View>
+        )}
       </AspectRatioContainer>
 
       {/* Timer countdown overlay */}
@@ -756,5 +764,21 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
     fontWeight: '600',
+  },
+  frozenOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  frozenText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '600',
+    marginBottom: 6,
+  },
+  frozenSubtext: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 14,
   },
 });
