@@ -144,7 +144,9 @@ describe('lensDetection utilities', () => {
         expect(telephoto?.zoom).toBe(5);
       });
 
-      it('should detect dual telephoto 3x + 10x (Samsung S23 Ultra style)', () => {
+      it('should detect single 5x telephoto for high maxZoom with de-duplicated telephoto (Samsung S23 Ultra style)', () => {
+        // physicalDevices are de-duplicated, so duplicate 'telephoto-camera' entries
+        // collapse to a single telephoto with zoom estimated from maxZoom
         const device = createMockDevice({
           physicalDevices: ['ultra-wide-angle-camera', 'wide-angle-camera', 'telephoto-camera', 'telephoto-camera'],
           minZoom: 0.5,
@@ -156,11 +158,13 @@ describe('lensDetection utilities', () => {
         const tele1 = lenses.find(l => l.id === 'telephoto-1');
         const tele2 = lenses.find(l => l.id === 'telephoto-2');
 
-        expect(tele1?.zoom).toBe(3);
-        expect(tele2?.zoom).toBe(10);
+        expect(tele1?.zoom).toBe(5);
+        expect(tele2).toBeUndefined();
       });
 
-      it('should detect dual telephoto 3x + 5x (maxZoom >= 40)', () => {
+      it('should detect single 5x telephoto for moderate maxZoom with de-duplicated telephoto', () => {
+        // physicalDevices are de-duplicated, so duplicate 'telephoto-camera' entries
+        // collapse to a single telephoto with zoom estimated from maxZoom
         const device = createMockDevice({
           physicalDevices: ['wide-angle-camera', 'telephoto-camera', 'telephoto-camera'],
           minZoom: 1,
@@ -172,8 +176,8 @@ describe('lensDetection utilities', () => {
         const tele1 = lenses.find(l => l.id === 'telephoto-1');
         const tele2 = lenses.find(l => l.id === 'telephoto-2');
 
-        expect(tele1?.zoom).toBe(3);
-        expect(tele2?.zoom).toBe(5);
+        expect(tele1?.zoom).toBe(5);
+        expect(tele2).toBeUndefined();
       });
     });
 
