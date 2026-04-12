@@ -18,6 +18,7 @@ export default function RootLayout() {
         >
           <Stack.Screen name="index" options={{ title: 'Camera' }} />
           <Stack.Screen name="remote" options={{ title: 'Remote' }} />
+          <Stack.Screen name="s/[sessionId]" options={{ title: 'Remote Session' }} />
           <Stack.Screen name="settings" options={{ title: 'Settings' }} />
           <Stack.Screen name="ui-test" options={{ title: 'UI Test' }} />
         </Stack>

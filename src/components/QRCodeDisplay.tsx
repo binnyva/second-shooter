@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, Text, TouchableOpacity, Dimensions } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
+import { buildRemoteSessionUrl } from '../../shared/session-link';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const QR_SIZE = Math.min(SCREEN_WIDTH * 0.6, 250);
@@ -11,19 +12,14 @@ interface QRCodeDisplayProps {
 }
 
 export function QRCodeDisplay({ sessionId, onClose }: QRCodeDisplayProps) {
-  // Create QR data payload
-  const qrData = JSON.stringify({
-    app: 'SecondShooter',
-    sessionId,
-    version: 1,
-  });
+  const qrData = buildRemoteSessionUrl(sessionId);
 
   return (
     <View style={styles.overlay}>
       <View style={styles.container}>
         <Text style={styles.title}>Scan to Connect</Text>
         <Text style={styles.subtitle}>
-          Open Second Shooter on another device and scan this code
+          Scan this code to open the app or web remote on another device
         </Text>
 
         <View style={styles.qrContainer}>
@@ -38,7 +34,7 @@ export function QRCodeDisplay({ sessionId, onClose }: QRCodeDisplayProps) {
         <Text style={styles.sessionId}>Session: {sessionId}</Text>
 
         <Text style={styles.instructions}>
-          The other device will become a remote control for this camera
+          If Second Shooter is installed it will open in the app. Otherwise the web remote will load in the browser.
         </Text>
 
         <TouchableOpacity style={styles.closeButton} onPress={onClose}>

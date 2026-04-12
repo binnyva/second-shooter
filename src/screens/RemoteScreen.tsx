@@ -1,0 +1,451 @@
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import {
+  View,
+  StyleSheet,
+  Text,
+  Alert,
+} from 'react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { MediaStream } from 'react-native-webrtc';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { QRCodeScanner } from '../components/QRCodeScanner';
+import { HybridPreview } from '../components/HybridPreview';
+import { CameraControls } from '../components/CameraControls';
+import { PhotoViewer } from '../components/PhotoViewer';
+import { useSignaling } from '../hooks/useSignaling';
+import { usePeerConnection } from '../hooks/usePeerConnection';
+import { useSettings } from '../hooks/useSettings';
+import { useVolumeShutter } from '../hooks/useVolumeShutter';
+import { webRTCService } from '../services/WebRTCService';
+import {
+  CameraState,
+  Response,
+  FlashMode,
+  CaptureMode,
+  LensInfo,
+  StreamMode,
+  FrameDataMessage,
+} from '../types';
+import { parseSessionIdFromInput } from '../../shared/session-link';
+
+const DEFAULT_STATE: CameraState = {
+  zoom: 1,
+  flash: 'off',
+  facing: 'back',
+  captureMode: 'photo',
+  isRecording: false,
+};
+
+export default function RemoteScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams<{ sessionId?: string | string[] }>();
+  const initialSessionId = useMemo(() => {
+    const rawSessionId = Array.isArray(params.sessionId)
+      ? params.sessionId[0]
+      : params.sessionId;
+    return rawSessionId ? parseSessionIdFromInput(String(rawSessionId)) : null;
+  }, [params.sessionId]);
+
+  // Settings
+  const { settings } = useSettings();
+
+  // Keep screen awake based on setting
+  useEffect(() => {
+    if (settings.keepScreenAwake) {
+      activateKeepAwakeAsync('remote-screen');
+    } else {
+      deactivateKeepAwake('remote-screen');
+    }
+    return () => {
+      deactivateKeepAwake('remote-screen');
+    };
+  }, [settings.keepScreenAwake]);
+
+  // UI state
+  const [showScanner, setShowScanner] = useState(!initialSessionId);
+  const [remoteState, setRemoteState] = useState<CameraState>(DEFAULT_STATE);
+  const [remoteLenses, setRemoteLenses] = useState<LensInfo[]>([]);
+  const [videoNeedsRotation, setVideoNeedsRotation] = useState(false);
+  const [previewZoomLimited, setPreviewZoomLimited] = useState(false);
+  const [streamMode, setStreamMode] = useState<StreamMode>('webrtc');
+  const [latestFrame, setLatestFrame] = useState<FrameDataMessage | null>(null);
+
+  // Last photo received from camera device
+  const [lastRemotePhotoUri, setLastRemotePhotoUri] = useState<string | null>(null);
+  const [showPhotoViewer, setShowPhotoViewer] = useState(false);
+
+  // Signaling
+  const {
+    sessionId,
+    joinSession,
+    sendAnswer,
+    onOffer,
+    addIceCandidate: addSignalingIceCandidate,
+    onIceCandidate: listenForIceCandidate,
+    cleanup: cleanupSignaling,
+  } = useSignaling('remote');
+
+  // Handle frame data from camera device (for frame-based streaming)
+  const framesReceivedRef = useRef(0);
+  const autoJoinAttemptedRef = useRef<string | null>(null);
+  const handleFrameData = useCallback((frameData: FrameDataMessage) => {
+    framesReceivedRef.current++;
+    // Log every 30 frames (~3 seconds)
+    if (framesReceivedRef.current % 30 === 0) {
+      console.log(`[REMOTE] Received ${framesReceivedRef.current} frames, latest id: ${frameData.frameId}, size: ${frameData.data?.length || 0} bytes`);
+    }
+    setLatestFrame(frameData);
+  }, []);
+
+  // Handle responses from camera device
+  const handleResponse = useCallback((response: Response) => {
+    // Handle frame data separately (high frequency)
+    if (response.type === 'FRAME_DATA') {
+      handleFrameData(response);
+      return;
+    }
+
+    // Handle photo data (don't log base64 content)
+    if (response.type === 'PHOTO_DATA') {
+      console.log(`[REMOTE] Received photo data: ${response.data?.length || 0} bytes`);
+      const photoUri = `data:image/jpeg;base64,${response.data}`;
+      setLastRemotePhotoUri(photoUri);
+      return;
+    }
+
+    console.log('Received response:', response.type);
+
+    switch (response.type) {
+      case 'STATE_UPDATE':
+        console.log(`[REMOTE] STATE_UPDATE: zoom=${response.state.zoom}, facing=${response.state.facing}, streamMode=${response.streamMode}`);
+        setRemoteState(response.state);
+        if (response.lenses) {
+          setRemoteLenses(response.lenses);
+        }
+        if (response.videoNeedsRotation !== undefined) {
+          setVideoNeedsRotation(response.videoNeedsRotation);
+        }
+        if (response.previewZoomLimited !== undefined) {
+          setPreviewZoomLimited(response.previewZoomLimited);
+        }
+        if (response.streamMode !== undefined) {
+          if (response.streamMode !== streamMode) {
+            console.log(`[REMOTE] Stream mode changing: ${streamMode} -> ${response.streamMode}`);
+          }
+          setStreamMode(response.streamMode);
+        }
+        break;
+
+      case 'PHOTO_TAKEN':
+        if (response.success) {
+          console.log('Photo taken successfully');
+        } else {
+          Alert.alert('Error', response.error || 'Failed to take photo');
+        }
+        break;
+
+      case 'RECORDING_STARTED':
+        setRemoteState((prev) => ({ ...prev, isRecording: true }));
+        break;
+
+      case 'RECORDING_STOPPED':
+        setRemoteState((prev) => ({ ...prev, isRecording: false }));
+        if (!response.success) {
+          Alert.alert('Error', response.error || 'Failed to stop recording');
+        }
+        break;
+
+      case 'ERROR':
+        Alert.alert('Error', response.message);
+        break;
+    }
+  }, [handleFrameData, streamMode]);
+
+  // Handle remote stream from camera
+  const handleRemoteStream = useCallback((stream: MediaStream) => {
+    const tracks = stream.getTracks();
+    const videoTracks = stream.getVideoTracks();
+    console.log(`[REMOTE] Received remote stream: ${tracks.length} tracks total, ${videoTracks.length} video tracks`);
+    videoTracks.forEach((track, i) => {
+      console.log(`[REMOTE] Video track ${i}: id=${track.id}, readyState=${track.readyState}, enabled=${track.enabled}`);
+    });
+  }, []);
+
+  // Track data channel ready state
+  const [isDataChannelReady, setIsDataChannelReady] = useState(false);
+
+  // Handle data channel open
+  const handleDataChannelOpen = useCallback(() => {
+    console.log('Data channel is now ready');
+    setIsDataChannelReady(true);
+    webRTCService.onFrameData(handleFrameData);
+  }, [handleFrameData]);
+
+  // WebRTC connection
+  const {
+    connectionState,
+    remoteStream,
+    createConnection,
+    createAnswer,
+    setRemoteDescription,
+    addIceCandidate: addPeerIceCandidate,
+    sendCommand,
+    close: closeConnection,
+  } = usePeerConnection({
+    role: 'remote',
+    onResponse: handleResponse,
+    onRemoteStream: handleRemoteStream,
+    onIceCandidate: async (candidate) => {
+      console.log('Sending ICE candidate to signaling');
+      await addSignalingIceCandidate(candidate);
+    },
+    onDataChannelOpen: handleDataChannelOpen,
+  });
+
+  const clearActiveConnection = useCallback(() => {
+    cleanupSignaling();
+    closeConnection();
+    setIsDataChannelReady(false);
+  }, [cleanupSignaling, closeConnection]);
+
+  const connectToSession = useCallback(async (scannedSessionId: string) => {
+    console.log('Scanned session ID:', scannedSessionId);
+
+    try {
+      const joined = await joinSession(scannedSessionId);
+      if (!joined) {
+        Alert.alert('Error', 'Session not found. Please scan the QR code again.');
+        setShowScanner(true);
+        if (initialSessionId) {
+          router.replace('/remote');
+        }
+        return;
+      }
+
+      await createConnection();
+
+      listenForIceCandidate(async (candidate) => {
+        console.log('Received ICE candidate from camera');
+        await addPeerIceCandidate(candidate);
+      });
+
+      onOffer(async (offer) => {
+        console.log('Received offer from camera');
+
+        await setRemoteDescription({ type: 'offer', sdp: offer.sdp });
+
+        const answer = await createAnswer();
+        await sendAnswer({ type: 'answer', sdp: answer.sdp! });
+      });
+
+      setShowScanner(false);
+    } catch (error) {
+      console.error('Error connecting to camera:', error);
+      Alert.alert('Error', 'Failed to connect to camera. Please try again.');
+      setShowScanner(true);
+      if (initialSessionId) {
+        router.replace('/remote');
+      }
+    }
+  }, [
+    addPeerIceCandidate,
+    createAnswer,
+    createConnection,
+    initialSessionId,
+    joinSession,
+    listenForIceCandidate,
+    onOffer,
+    router,
+    sendAnswer,
+    setRemoteDescription,
+  ]);
+
+  useEffect(() => {
+    if (!initialSessionId) {
+      return;
+    }
+
+    if (autoJoinAttemptedRef.current === initialSessionId) {
+      return;
+    }
+
+    autoJoinAttemptedRef.current = initialSessionId;
+    setShowScanner(false);
+    connectToSession(initialSessionId);
+  }, [connectToSession, initialSessionId]);
+
+  // Control handlers
+  const handleTakePhoto = useCallback(() => {
+    sendCommand({ type: 'TAKE_PHOTO' });
+  }, [sendCommand]);
+
+  const handleStartRecording = useCallback(() => {
+    sendCommand({ type: 'START_RECORDING' });
+  }, [sendCommand]);
+
+  const handleStopRecording = useCallback(() => {
+    sendCommand({ type: 'STOP_RECORDING' });
+  }, [sendCommand]);
+
+  const handleToggleFlash = useCallback(() => {
+    const modes: FlashMode[] = ['off', 'on', 'auto'];
+    const currentIndex = modes.indexOf(remoteState.flash);
+    const nextIndex = (currentIndex + 1) % modes.length;
+    sendCommand({ type: 'SET_FLASH', mode: modes[nextIndex] });
+  }, [sendCommand, remoteState.flash]);
+
+  const handleSwitchCamera = useCallback(() => {
+    sendCommand({ type: 'SWITCH_CAMERA' });
+  }, [sendCommand]);
+
+  const handleZoomChange = useCallback((zoom: number) => {
+    sendCommand({ type: 'SET_ZOOM', level: zoom });
+  }, [sendCommand]);
+
+  const handleCaptureModeChange = useCallback((mode: CaptureMode) => {
+    setRemoteState((prev) => ({ ...prev, captureMode: mode }));
+  }, []);
+
+  // Handle back navigation
+  const handleBack = () => {
+    clearActiveConnection();
+    router.back();
+  };
+
+  // Handle QR scanner button - show scanner to connect to a new camera
+  const handleQRPress = () => {
+    clearActiveConnection();
+    setShowScanner(true);
+    router.replace('/remote');
+  };
+
+  // Handle mode toggle - navigate back to camera mode
+  const handleModeToggle = () => {
+    clearActiveConnection();
+    router.replace('/');
+  };
+
+  // Handle settings press
+  const handleSettingsPress = () => {
+    router.push('/settings');
+  };
+
+  // Handle lens selection - send command to camera
+  const handleLensSelect = useCallback((zoom: number) => {
+    sendCommand({ type: 'SET_ZOOM', level: zoom });
+  }, [sendCommand]);
+
+  // Handle opening photo viewer
+  const handleOpenPhotoViewer = useCallback(() => {
+    if (lastRemotePhotoUri) {
+      setShowPhotoViewer(true);
+    }
+  }, [lastRemotePhotoUri]);
+
+  // Volume button shutter
+  const handleVolumeShutter = useCallback(() => {
+    if (connectionState !== 'connected') return;
+    if (remoteState.captureMode === 'photo') {
+      handleTakePhoto();
+    } else if (remoteState.isRecording) {
+      handleStopRecording();
+    } else {
+      handleStartRecording();
+    }
+  }, [connectionState, remoteState.captureMode, remoteState.isRecording, handleTakePhoto, handleStartRecording, handleStopRecording]);
+
+  useVolumeShutter({ onShutterPress: handleVolumeShutter, enabled: !showScanner });
+
+  // Request initial state when data channel becomes ready
+  useEffect(() => {
+    if (isDataChannelReady && !showScanner) {
+      console.log('Data channel ready, requesting initial state');
+      sendCommand({ type: 'GET_STATE' });
+    }
+  }, [isDataChannelReady, showScanner, sendCommand]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      clearActiveConnection();
+    };
+  }, [clearActiveConnection]);
+
+  return (
+    <View style={styles.container}>
+      {showScanner ? (
+        <QRCodeScanner
+          onScan={connectToSession}
+          onClose={handleBack}
+        />
+      ) : (
+        <>
+          <HybridPreview
+            stream={remoteStream}
+            connectionState={connectionState}
+            streamMode={streamMode}
+            latestFrame={latestFrame}
+            facing={remoteState.facing}
+            videoNeedsRotation={videoNeedsRotation}
+          />
+
+          <CameraControls
+            cameraState={remoteState}
+            onTakePhoto={handleTakePhoto}
+            onStartRecording={handleStartRecording}
+            onStopRecording={handleStopRecording}
+            onToggleFlash={handleToggleFlash}
+            onSwitchCamera={handleSwitchCamera}
+            onZoomChange={handleZoomChange}
+            onCaptureModeChange={handleCaptureModeChange}
+            disabled={connectionState !== 'connected'}
+            lastPhotoUri={lastRemotePhotoUri ?? undefined}
+            onOpenGallery={handleOpenPhotoViewer}
+            onSettingsPress={handleSettingsPress}
+            onQRPress={handleQRPress}
+            onModeToggle={handleModeToggle}
+            onLensSelect={handleLensSelect}
+            availableLenses={remoteLenses}
+            currentMode="remote"
+            previewZoomLimited={previewZoomLimited}
+          />
+
+          <PhotoViewer
+            visible={showPhotoViewer}
+            photoUri={lastRemotePhotoUri}
+            onClose={() => setShowPhotoViewer(false)}
+          />
+
+          {sessionId && (
+            <View style={styles.sessionInfo}>
+              <Text style={styles.sessionText}>
+                Session: {sessionId}
+              </Text>
+            </View>
+          )}
+        </>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+  sessionInfo: {
+    position: 'absolute',
+    top: 60,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  sessionText: {
+    color: '#888',
+    fontSize: 10,
+    fontFamily: 'monospace',
+  },
+});

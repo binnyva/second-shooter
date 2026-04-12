@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, Text, TouchableOpacity, Dimensions } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { parseSessionIdFromInput } from '../../shared/session-link';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SCAN_AREA_SIZE = Math.min(SCREEN_WIDTH * 0.7, 280);
@@ -8,12 +9,6 @@ const SCAN_AREA_SIZE = Math.min(SCREEN_WIDTH * 0.7, 280);
 interface QRCodeScannerProps {
   onScan: (sessionId: string) => void;
   onClose: () => void;
-}
-
-interface QRPayload {
-  app: string;
-  sessionId: string;
-  version: number;
 }
 
 export function QRCodeScanner({ onScan, onClose }: QRCodeScannerProps) {
@@ -30,26 +25,16 @@ export function QRCodeScanner({ onScan, onClose }: QRCodeScannerProps) {
   const handleBarCodeScanned = ({ type, data }: { type: string; data: string }) => {
     if (scanned) return;
 
-    try {
-      const payload: QRPayload = JSON.parse(data);
+    const sessionId = parseSessionIdFromInput(data);
 
-      // Validate QR code is from our app
-      if (payload.app !== 'SecondShooter') {
-        setError('Invalid QR code. Please scan a Second Shooter QR code.');
-        return;
-      }
-
-      if (!payload.sessionId) {
-        setError('Invalid session ID in QR code.');
-        return;
-      }
-
-      setScanned(true);
-      setError(null);
-      onScan(payload.sessionId);
-    } catch (e) {
-      setError('Could not read QR code. Please try again.');
+    if (!sessionId) {
+      setError('Invalid QR code. Please scan a Second Shooter QR code.');
+      return;
     }
+
+    setScanned(true);
+    setError(null);
+    onScan(sessionId);
   };
 
   const handleRetry = () => {

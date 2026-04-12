@@ -26,6 +26,7 @@ type AnswerCallback = (answer: SignalingAnswer) => void;
 
 class SignalingService {
   private sessionId: string | null = null;
+  private ownsSession = false;
   private unsubscribers: Unsubscribe[] = [];
   private processedOfferSdp: string | null = null;
   private processedAnswerSdp: string | null = null;
@@ -45,6 +46,7 @@ class SignalingService {
     });
 
     this.sessionId = sessionId;
+    this.ownsSession = true;
     return sessionId;
   }
 
@@ -62,6 +64,7 @@ class SignalingService {
     }
 
     this.sessionId = sessionId;
+    this.ownsSession = false;
     return true;
   }
 
@@ -215,10 +218,11 @@ class SignalingService {
     this.unsubscribers.forEach((unsubscribe) => unsubscribe());
     this.unsubscribers = [];
 
-    if (this.sessionId) {
+    if (this.sessionId && this.ownsSession) {
       this.deleteSession(this.sessionId);
-      this.sessionId = null;
     }
+    this.sessionId = null;
+    this.ownsSession = false;
 
     // Reset processed flags for next session
     this.processedOfferSdp = null;

@@ -6,6 +6,8 @@ You can use this to take a video/photo of yourself by using a secondary phone to
 
 This can be done by activating the remote mode on the main phone that will show a QR code. This QR code will be scanned by the secondary phone which will open the same app in the secondary phone. It should be installed already, and then you will get remote functions from the secondary phone. 
 
+If the second device does not have the app installed, the QR code can now open the browser-based remote at `https://remote.secondshooter.app/s/{sessionId}` instead.
+
 ## Features
 
 - **Remote Camera Control**: Take photos and record videos from another device
@@ -141,6 +143,19 @@ npx expo start --dev-client
 Your device connects to this server and hot-reloads JavaScript changes instantly - no new APK needed. Make sure your device and development machine are on the same network.
 
 **When to rebuild**: Only run `npx expo run:android` again if you add/remove native dependencies, change `app.json` config, or modify the `android/` directory.
+
+### Web Remote
+
+The browser fallback remote lives in [`web-remote`](/Users/binnyva/Data/Code/Mobile/SecondShooter/web-remote).
+
+```bash
+# Start the browser remote locally
+npm run web-remote:dev
+```
+
+It expects the same Firebase public env vars as the Expo app and supports optional TURN
+configuration with `EXPO_PUBLIC_TURN_URL`, `EXPO_PUBLIC_TURN_USERNAME`, and
+`EXPO_PUBLIC_TURN_CREDENTIAL`.
 
 ### Release Build
 

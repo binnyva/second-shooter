@@ -418,6 +418,14 @@ describe('SignalingService', () => {
       expect(mockDeleteDoc).toHaveBeenCalled();
     });
 
+    it('should not delete joined sessions during cleanup', async () => {
+      await signalingService.joinSession('XYZ789');
+
+      signalingService.cleanup();
+
+      expect(mockDeleteDoc).not.toHaveBeenCalled();
+    });
+
     it('should reset session ID', async () => {
       await signalingService.createSession();
       expect(signalingService.getSessionId()).toBe('ABC123');

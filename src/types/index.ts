@@ -1,74 +1,24 @@
-// Device roles in the peer-to-peer connection
-export type DeviceRole = 'camera' | 'remote';
+export type {
+  DeviceRole,
+  CameraFacing,
+  FlashMode,
+  CaptureMode,
+  RecordingState,
+  StreamMode,
+  CameraState,
+  Command,
+  FrameDataMessage,
+  PhotoDataMessage,
+  Response,
+  ConnectionState,
+  LensInfo,
+} from '../../shared/protocol';
 
-// Camera facing direction
-export type CameraFacing = 'front' | 'back';
-
-// Flash modes
-export type FlashMode = 'off' | 'on' | 'auto';
-
-// Capture modes
-export type CaptureMode = 'photo' | 'video';
-
-// Recording state
-export type RecordingState = 'idle' | 'recording';
-
-// Stream mode for WebRTC preview
-// 'webrtc' - standard WebRTC video stream (works for 1x zoom on back camera and front camera)
-// 'frame-based' - frame capture via vision-camera frame processor for other zoom levels
-export type StreamMode = 'webrtc' | 'frame-based';
-
-// Camera state shared between devices
-export interface CameraState {
-  zoom: number;
-  flash: FlashMode;
-  facing: CameraFacing;
-  captureMode: CaptureMode;
-  isRecording: boolean;
-  streamMode?: StreamMode;
-}
-
-// Commands sent from remote to camera device via data channel
-export type Command =
-  | { type: 'TAKE_PHOTO' }
-  | { type: 'START_RECORDING' }
-  | { type: 'STOP_RECORDING' }
-  | { type: 'SET_ZOOM'; level: number }
-  | { type: 'SET_FLASH'; mode: FlashMode }
-  | { type: 'SWITCH_CAMERA' }
-  | { type: 'GET_STATE' };
-
-// Frame data message sent from camera to remote via data channel (for frame-based streaming)
-export interface FrameDataMessage {
-  type: 'FRAME_DATA';
-  frameId: number;
-  data: string;  // base64 JPEG
-  timestamp: number;
-}
-
-// Photo data message sent from camera to remote after taking a photo
-export interface PhotoDataMessage {
-  type: 'PHOTO_DATA';
-  data: string;  // base64 JPEG
-  timestamp: number;
-}
-
-// Responses sent from camera to remote device via data channel
-export type Response =
-  | { type: 'PHOTO_TAKEN'; success: boolean; error?: string }
-  | { type: 'RECORDING_STARTED' }
-  | { type: 'RECORDING_STOPPED'; success: boolean; error?: string }
-  | { type: 'STATE_UPDATE'; state: CameraState; lenses?: LensInfo[]; videoNeedsRotation?: boolean; previewZoomLimited?: boolean; streamMode?: StreamMode }
-  | { type: 'ERROR'; message: string }
-  | FrameDataMessage
-  | PhotoDataMessage;
-
-// WebRTC connection states
-export type ConnectionState =
-  | 'disconnected'
-  | 'connecting'
-  | 'connected'
-  | 'failed';
+export type {
+  SignalingOffer,
+  SignalingAnswer,
+  IceCandidate,
+} from '../../shared/signaling';
 
 // Session info for pairing
 export interface SessionInfo {
@@ -81,31 +31,6 @@ export interface IceServer {
   urls: string | string[];
   username?: string;
   credential?: string;
-}
-
-// Signaling message types
-export interface SignalingOffer {
-  type: 'offer';
-  sdp: string;
-}
-
-export interface SignalingAnswer {
-  type: 'answer';
-  sdp: string;
-}
-
-export interface IceCandidate {
-  candidate: string;
-  sdpMLineIndex: number | null;
-  sdpMid: string | null;
-}
-
-// Camera lens information for lens selector UI
-export interface LensInfo {
-  id: string;
-  label: string;     // "F", ".6", "1", "3", "5" etc.
-  zoom: number;      // Actual zoom factor
-  isActive: boolean;
 }
 
 // Re-export settings types

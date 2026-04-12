@@ -16,6 +16,9 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.secondshooter.app",
+      "associatedDomains": [
+        "applinks:remote.secondshooter.app"
+      ],
       "infoPlist": {
         "NSCameraUsageDescription": "This app needs camera access to capture photos and videos",
         "NSMicrophoneUsageDescription": "This app needs microphone access to record videos with audio",
@@ -31,6 +34,23 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "remote.secondshooter.app",
+              "pathPrefix": "/s"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ],
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
