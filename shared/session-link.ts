@@ -1,5 +1,6 @@
-const DEFAULT_REMOTE_WEB_ORIGIN = 'https://remote.secondshooter.app';
+const DEFAULT_REMOTE_WEB_ORIGIN = 'https://apps.binnyva.com/second-shooter';
 const SESSION_PATH_PREFIX = '/s/';
+const SESSION_PATH_MATCH = /\/s\/([^/]+)\/?$/;
 const SESSION_ID_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
 
 function normalizeOrigin(origin: string): string {
@@ -21,10 +22,11 @@ function extractSessionIdFromUrl(value: string): string | null {
       return querySessionId;
     }
 
-    if (url.pathname.startsWith(SESSION_PATH_PREFIX)) {
-      const sessionId = decodeURIComponent(
-        url.pathname.slice(SESSION_PATH_PREFIX.length).split('/')[0] || ''
-      ).toUpperCase();
+    // Match "/s/{id}" at the end of the path so links work regardless of the
+    // base path the web remote is deployed under (e.g. "/second-shooter/s/{id}").
+    const pathMatch = url.pathname.match(SESSION_PATH_MATCH);
+    if (pathMatch) {
+      const sessionId = decodeURIComponent(pathMatch[1]).toUpperCase();
       return isValidSessionId(sessionId) ? sessionId : null;
     }
   } catch {

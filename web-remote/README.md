@@ -30,4 +30,9 @@ npm run dev
 
 `public/.well-known/assetlinks.json` and `public/.well-known/apple-app-site-association`
 are checked in as templates. Replace the placeholder certificate fingerprint and Apple team
-ID before deploying to `https://remote.secondshooter.app`.
+ID before deploying to `https://apps.binnyva.com/second-shooter/`.
+
+Note: iOS and Android fetch these files from the **domain root**
+(`https://apps.binnyva.com/.well-known/...`), not from the `/second-shooter/`
+subdirectory. Since the site is deployed under a subdirectory, copy the two files to
+`/.well-known/` at the root of `apps.binnyva.com` on the server.

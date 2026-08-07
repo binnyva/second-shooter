@@ -17,7 +17,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.secondshooter.app",
       "associatedDomains": [
-        "applinks:remote.secondshooter.app"
+        "applinks:apps.binnyva.com"
       ],
       "infoPlist": {
         "NSCameraUsageDescription": "This app needs camera access to capture photos and videos",
@@ -41,8 +41,8 @@
           "data": [
             {
               "scheme": "https",
-              "host": "remote.secondshooter.app",
-              "pathPrefix": "/s"
+              "host": "apps.binnyva.com",
+              "pathPrefix": "/second-shooter/s"
             }
           ],
           "category": [

@@ -6,32 +6,41 @@ You can use this to take a video/photo of yourself by using a secondary phone to
 
 This can be done by activating the remote mode on the main phone that will show a QR code. This QR code will be scanned by the secondary phone which will open the same app in the secondary phone. It should be installed already, and then you will get remote functions from the secondary phone. 
 
-If the second device does not have the app installed, the QR code can now open the browser-based remote at `https://remote.secondshooter.app/s/{sessionId}` instead.
+If the second device does not have the app installed, the QR code can now open the browser-based remote at `https://apps.binnyva.com/second-shooter/s/{sessionId}` instead.
 
 ## Features
 
 - **Remote Camera Control**: Take photos and record videos from another device
 - **QR Code Pairing**: Simple, fast device pairing via QR code scanning
-- **Peer-to-Peer Connection**: Direct device-to-device communication over the internet with no intermediary server
+- **Browser Remote Fallback**: If the second device doesn't have the app, the QR code opens a web remote at `https://apps.binnyva.com/second-shooter/s/{sessionId}` (deep links open the app when installed)
+- **Peer-to-Peer Connection**: Direct device-to-device communication over the internet with no intermediary server (Firebase Firestore is used only for signaling)
 - **Cross-Platform**: Single codebase for both iOS and Android
-- **Live Preview**: Real-time camera viewfinder streaming to the remote device
-- **Full Camera Controls**: Access to focus, exposure, zoom, and other camera settings
+- **Live Preview**: Real-time camera viewfinder streaming to the remote device, with a hybrid WebRTC/frame-based mode so zoomed previews display correctly
+- **Camera Controls**: Zoom (with per-lens detection), flash, front/back switch, photo/video modes
+- **Photo Preview on Remote**: Captured photos are sent back to the remote device for review
+- **Volume Button Shutter**: Use the volume buttons as a physical shutter trigger
+- **Settings**: Timer (2/5/10s), grid overlays (3x3, 4x4), aspect ratio (1:1, 4:5, 9:16), save location, preview quality
 
 ## Tech Stack
 
 ### Framework
-- **React Native** - Cross-platform mobile development
+- **Expo (React Native)** - Cross-platform mobile development with a custom dev client (prebuild for native modules)
+- **Expo Router** - File-based navigation (`app/` directory)
 
 ### Key Libraries
-- **react-native-vision-camera** - Advanced camera functionality and control
+- **react-native-vision-camera** - Advanced camera functionality and control (frame processors enabled)
 - **react-native-webrtc** - Peer-to-peer connection and video streaming
-- **react-native-qrcode-scanner** - QR code scanning for pairing
+- **expo-camera** - QR code scanning for pairing
 - **react-native-qrcode-svg** - QR code generation
-- **Socket.io-client** (optional) - Signaling for WebRTC connection establishment
+- **Firebase Firestore** - Signaling for WebRTC connection establishment
+- **react-native-volume-manager** - Volume button shutter trigger
+- **expo-media-library** - Saving photos/videos to the device
 
 ### Architecture
 - **WebRTC** - Handles P2P connection, data channels, and media streaming
 - **STUN/TURN servers** - NAT traversal (only for connection establishment, not for media relay)
+- **Hybrid preview streaming** - WebRTC video stream for front camera and back camera at 1x zoom; frame-based JPEG streaming over the data channel at other zoom levels (WebRTC can't capture vision-camera's zoomed preview)
+- **Web remote** - A Vite + React browser client in `web-remote/` that shares the signaling/protocol code in `shared/`
 
 ## How It Works
 
@@ -78,32 +87,55 @@ If the second device does not have the app installed, the QR code can now open t
 
 ```
 second-shooter/
+├── app/                            # Expo Router screens
+│   ├── _layout.tsx                 # Root layout
+│   ├── index.tsx                   # Home = Camera mode (default)
+│   ├── remote.tsx                  # Remote control screen
+│   ├── settings.tsx                # Settings screen
+│   └── s/[sessionId].tsx           # Deep link handler for session URLs
 ├── src/
 │   ├── components/
-│   │   ├── CameraView.tsx          # Camera interface and controls
-│   │   ├── RemoteControl.tsx       # Remote control interface
-│   │   ├── QRCodeGenerator.tsx     # QR code display for pairing
-│   │   └── QRCodeScanner.tsx       # QR code scanning component
+│   │   ├── CameraView.tsx          # Camera interface
+│   │   ├── CameraControls.tsx      # Shutter, zoom, flash, mode controls
+│   │   ├── HybridPreview.tsx       # WebRTC / frame-based preview switcher
+│   │   ├── RemotePreview.tsx       # Remote live preview
+│   │   ├── PhotoViewer.tsx         # Captured photo review
+│   │   ├── QRCodeDisplay.tsx       # QR code display for pairing
+│   │   ├── QRCodeScanner.tsx       # QR code scanning component
+│   │   ├── GridOverlay.tsx         # Composition grid overlays
+│   │   ├── TimerCountdown.tsx      # Shutter timer countdown
+│   │   └── AspectRatioContainer.tsx
 │   ├── services/
 │   │   ├── WebRTCService.ts        # WebRTC connection management
 │   │   ├── CameraService.ts        # Camera operations wrapper
-│   │   ├── SignalingService.ts     # WebRTC signaling handler
-│   │   └── PairingService.ts       # QR code pairing logic
+│   │   ├── SignalingService.ts     # Firebase Firestore signaling handler
+│   │   ├── MediaService.ts         # Photo/video save operations
+│   │   └── SettingsService.ts      # Persistent app settings (AsyncStorage)
 │   ├── hooks/
 │   │   ├── useCamera.ts            # Camera functionality hook
 │   │   ├── usePeerConnection.ts    # WebRTC peer connection hook
-│   │   └── useRemoteControl.ts     # Remote control state hook
-│   ├── types/
-│   │   └── index.ts                # TypeScript type definitions
+│   │   ├── useSignaling.ts         # Firebase signaling hook
+│   │   ├── useSettings.ts          # App settings hook
+│   │   └── useVolumeShutter.ts     # Volume button shutter trigger
+│   ├── config/
+│   │   ├── firebase.ts             # Firebase initialization (env vars)
+│   │   └── webrtc.ts               # ICE server / data channel config
+│   ├── types/                      # TypeScript type definitions
 │   ├── utils/
 │   │   ├── permissions.ts          # Camera/mic permission helpers
-│   │   └── constants.ts            # App constants
-│   └── screens/
-│       ├── HomeScreen.tsx          # Role selection (Camera/Remote)
-│       ├── CameraScreen.tsx        # Camera device screen
-│       └── RemoteScreen.tsx        # Remote control screen
+│   │   ├── sessionId.ts            # Session ID generation
+│   │   ├── lensDetection.ts        # Physical lens detection (0.5x/1x/2x)
+│   │   └── streamMode.ts           # WebRTC vs frame-based mode selection
+│   └── __tests__/                  # Jest unit tests
+├── shared/                         # Code shared with the web remote
+│   ├── protocol.ts                 # Data channel command/response types
+│   ├── signaling.ts                # Signaling message types
+│   └── session-link.ts             # Session URL build/parse helpers
+├── web-remote/                     # Browser-based remote (Vite + React)
+├── plugins/                        # Expo config plugins
 ├── android/                        # Android native code
 ├── ios/                            # iOS native code
+├── app.json                        # Expo configuration (permissions, deep links)
 ├── package.json
 └── README.md
 ```
@@ -146,7 +178,7 @@ Your device connects to this server and hot-reloads JavaScript changes instantly
 
 ### Web Remote
 
-The browser fallback remote lives in [`web-remote`](/Users/binnyva/Data/Code/Mobile/SecondShooter/web-remote).
+The browser fallback remote lives in [`web-remote/`](web-remote/).
 
 ```bash
 # Start the browser remote locally
@@ -163,38 +195,46 @@ configuration with `EXPO_PUBLIC_TURN_URL`, `EXPO_PUBLIC_TURN_USERNAME`, and
 npx expo run:android --variant release
 ```
 
+### Running Tests
+
+```bash
+npm test
+```
+
+Unit tests (Jest) cover the services and utilities in `src/__tests__/`. Use `npm run test:watch` or `npm run test:coverage` for watch mode and coverage reports.
+
 ## Configuration
+
+### Firebase (Signaling)
+
+Signaling uses Firebase Firestore. Copy `.env.example` to `.env` and fill in your Firebase project credentials:
+
+```bash
+cp .env.example .env
+```
+
+```
+EXPO_PUBLIC_FIREBASE_API_KEY=...
+EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN=...
+EXPO_PUBLIC_FIREBASE_PROJECT_ID=...
+EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET=...
+EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=...
+EXPO_PUBLIC_FIREBASE_APP_ID=...
+```
 
 ### WebRTC Configuration
 
-Configure STUN servers in `src/utils/constants.ts`:
+STUN servers are configured in `src/config/webrtc.ts` (Google's public STUN servers by default). For better NAT traversal you can optionally add a TURN server via environment variables (only used as fallback when direct P2P fails):
 
-```typescript
-export const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-];
 ```
-
-For better NAT traversal, you may optionally add TURN servers (only used as fallback when direct P2P fails):
-
-```typescript
-export const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  {
-    urls: 'turn:your-turn-server.com:3478',
-    username: 'username',
-    credential: 'password'
-  }
-];
+EXPO_PUBLIC_TURN_URL=turn:your-turn-server.com:3478
+EXPO_PUBLIC_TURN_USERNAME=username
+EXPO_PUBLIC_TURN_CREDENTIAL=password
 ```
 
 ### Camera Permissions
 
-The app requires camera and microphone permissions. These are configured in:
-
-- **iOS**: `ios/SecondShooter/Info.plist`
-- **Android**: `android/app/src/main/AndroidManifest.xml`
+The app requires camera, microphone, and photo library permissions. These are configured in `app.json` (Expo config) — `ios.infoPlist` for iOS and `android.permissions` for Android — and applied to the native projects on prebuild.
 
 ## Usage
 
@@ -216,12 +256,12 @@ The app requires camera and microphone permissions. These are configured in:
 
 ### Camera Controls
 
-- **Capture Photo**: Single tap the shutter button
+- **Capture Photo**: Single tap the shutter button, or press a volume button (if enabled in Settings)
 - **Record Video**: Change to video mode, then shutter button
-- **Zoom**: Pinch gesture or zoom slider
-- **Focus**: Tap on preview to focus
+- **Zoom**: Pinch gesture, zoom slider, or lens buttons (0.5x / 1x / 2x based on detected lenses)
 - **Flash**: Toggle flash modes
-- **Switch Camera**: Front/back/different zoom camera toggle
+- **Switch Camera**: Front/back camera toggle
+- **Timer / Grid / Aspect Ratio**: Configured in the Settings screen
 
 ## Technical Challenges & Solutions
 
@@ -231,15 +271,17 @@ The app requires camera and microphone permissions. These are configured in:
 
 **Solution**: Use STUN servers for NAT hole punching. For difficult network scenarios, TURN servers can relay traffic (though this reduces the "serverless" benefit).
 
-### Signaling Without a Server
+### Signaling
 
 **Challenge**: WebRTC requires signaling to exchange connection information.
 
-**Solutions**:
-1. **QR Code Exchange**: Initial offer encoded in QR code
-2. **Firebase Firestore** (lightweight option): Temporary signaling documents
-3. **Public MQTT Broker**: Ephemeral signaling messages
-4. **Manual Exchange**: Copy/paste connection strings (development only)
+**Solution**: The QR code carries only a short session ID; the WebRTC offer/answer and ICE candidates are exchanged through temporary Firebase Firestore documents. Once the P2P connection is established, Firestore is no longer involved.
+
+### Zoomed Preview Streaming
+
+**Challenge**: WebRTC's `getUserMedia` stream doesn't respect vision-camera's zoom on Android, so the remote preview wouldn't match what will be captured.
+
+**Solution**: A hybrid preview — WebRTC video for the front camera and back camera at 1x, switching to frame-based JPEG streaming over the data channel at other zoom levels (see `src/utils/streamMode.ts` and `HybridPreview.tsx`).
 
 ### Low Latency Streaming
 
@@ -253,17 +295,20 @@ The app requires camera and microphone permissions. These are configured in:
 
 ## Roadmap
 
-- [ ] Basic camera control (photo/video)
-- [ ] QR code pairing implementation
-- [ ] WebRTC P2P connection
-- [ ] Live camera preview streaming
+- [x] Basic camera control (photo/video)
+- [x] QR code pairing implementation
+- [x] WebRTC P2P connection
+- [x] Live camera preview streaming
+- [x] Settings and preferences
+- [x] Timer
+- [x] Grid overlays and composition guides
+- [x] Volume button shutter
+- [x] Browser-based remote fallback with deep links
 - [ ] Advanced camera controls (ISO, shutter speed, white balance)
 - [ ] Multiple camera device support
 - [ ] Photo/video gallery and review
-- [ ] Settings and preferences
 - [ ] Gesture controls (swipe to adjust settings)
-- [ ] Timer and burst mode
-- [ ] Grid overlays and composition guides
+- [ ] Burst mode
 
 ## Known Limitations
 
