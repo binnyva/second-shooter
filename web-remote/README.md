@@ -13,11 +13,8 @@ The web remote reads the same Firebase variables already used by the Expo app:
 - `EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`
 - `EXPO_PUBLIC_FIREBASE_APP_ID`
 
-Optional TURN variables:
-
-- `EXPO_PUBLIC_TURN_URL`
-- `EXPO_PUBLIC_TURN_USERNAME`
-- `EXPO_PUBLIC_TURN_CREDENTIAL`
+TURN needs no env vars: credentials are minted per connection by the `getIceServers`
+Cloud Function (see `functions/`), and pairing falls back to STUN if that call fails.
 
 ## Commands
 

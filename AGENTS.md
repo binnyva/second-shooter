@@ -97,6 +97,7 @@ Shared between the mobile app and the web remote:
 - `shared/protocol.ts` - Data channel command/response types (source of truth for the protocol)
 - `shared/signaling.ts` - Signaling message types
 - `shared/session-link.ts` - Session URL building/parsing (`/s/{sessionId}` links)
+- `shared/ice.ts` - STUN server list, ICE tuning constants, and the `getIceServers` callable's name/region/response parsing
 
 ### Tech Stack
 - **Framework**: Expo (with prebuild for native modules)
@@ -105,7 +106,7 @@ Shared between the mobile app and the web remote:
 - **P2P/Streaming**: react-native-webrtc
 - **QR**: expo-camera (scanner), react-native-qrcode-svg (generator)
 - **Signaling**: Firebase Firestore
-- **NAT traversal**: STUN servers, optional TURN via env vars (configured in `src/config/webrtc.ts`)
+- **NAT traversal**: STUN servers (`shared/ice.ts`) plus Cloudflare Realtime TURN, with credentials minted per connection by the `getIceServers` Cloud Function
 - **Settings storage**: @react-native-async-storage/async-storage
 - **Volume shutter**: react-native-volume-manager
 - **Web remote**: Vite + React (in `web-remote/`)
@@ -160,7 +161,11 @@ Shared between the mobile app and the web remote:
 ├── shared/                       # Code shared with web remote
 │   ├── protocol.ts               # Data channel protocol types
 │   ├── signaling.ts              # Signaling message types
-│   └── session-link.ts           # Session URL helpers
+│   ├── session-link.ts           # Session URL helpers
+│   └── ice.ts                    # STUN list + getIceServers callable contract
+├── functions/                    # Firebase Cloud Functions
+│   ├── src/index.ts              # getIceServers - mints Cloudflare TURN credentials
+│   └── .env.example              # Cloudflare TURN key ID template (.env is untracked)
 ├── web-remote/                   # Browser-based remote (Vite + React)
 │   └── src/lib/                  # firebase, signaling, webrtc clients
 ├── plugins/                      # Expo config plugins
@@ -176,32 +181,35 @@ Before running the app, you need to:
 
 1. Create a Firebase project at console.firebase.google.com
 2. Enable Firestore Database
-3. Copy `.env.example` to `.env` and fill in the `EXPO_PUBLIC_FIREBASE_*` variables (read by `src/config/firebase.ts`)
-4. Set up Firestore security rules (example below)
+3. Enable **Anonymous** authentication (Authentication → Sign-in method → Anonymous). Clients sign in anonymously before touching Firestore (`ensureSignedIn()` in `src/config/firebase.ts` and `web-remote/src/lib/firebase.ts`); without this provider enabled, session create/join fails.
+4. Copy `.env.example` to `.env` and fill in the `EXPO_PUBLIC_FIREBASE_*` variables (read by `src/config/firebase.ts`)
+5. Deploy the Firestore security rules from `firestore.rules` (paste into Firestore Database → Rules, or `firebase deploy --only firestore:rules`)
+6. Create Firestore **TTL policies** on the `expireAt` field for the collection groups `sessions`, `offerCandidates`, and `answerCandidates` (Firestore Database → the TTL tab, or `gcloud firestore fields ttls update expireAt --collection-group=...`). Clients stamp `expireAt` (1 hour out) on session and candidate docs; TTL garbage-collects abandoned sessions and orphaned candidate docs. TTL deletion is lazy (typically within 24h of expiry) — that's fine, since the rules already prevent stale sessions from being discovered.
 
-The web remote uses the same Firebase public env vars. An optional TURN server can be configured with `EXPO_PUBLIC_TURN_URL`, `EXPO_PUBLIC_TURN_USERNAME`, and `EXPO_PUBLIC_TURN_CREDENTIAL`.
+7. Deploy the `getIceServers` function (`firebase deploy --only functions`) after setting the Cloudflare API token: `firebase functions:secrets:set CLOUDFLARE_TURN_API_TOKEN`. `CLOUDFLARE_TURN_TOKEN_ID` goes in `functions/.env` (copy `functions/.env.example`); both files stay out of git.
+
+The web remote uses the same Firebase public env vars.
+
+### TURN Relay
+
+STUN alone can't connect peers behind symmetric NAT or most carrier CGNAT, so both clients relay through Cloudflare Realtime TURN when no direct path exists. Cloudflare issues only short-lived credentials via its API — there is no static username/password — so `functions/src/index.ts` mints them:
+
+- `getIceServers` is an authenticated v2 callable in `us-central1`. Anonymous auth is enough, which keeps the relay quota tied to app users rather than anyone who finds the endpoint.
+- Credentials get a 2h TTL and are cached in-instance until 20 minutes before expiry, so a warm instance serves many pairings from one Cloudflare call. Credential values are never logged.
+- Clients (`src/config/webrtc.ts`, `web-remote/src/lib/webrtc.ts`) fetch on every `createPeerConnection`/`createConnection` — both are async for this reason — and fall back to the STUN-only list if the call fails or times out (8s).
+
+`invoker: 'public'` on the callable is load-bearing: without the `allUsers` → `roles/run.invoker` binding, Cloud Run rejects every client before the function's own auth check runs (the SDK surfaces this as `functions/permission-denied` or `functions/unauthenticated`, which looks exactly like an auth bug). The Firebase CLI only applies that binding when it **creates** the function — adding the option to an existing function and redeploying is silently a no-op. If the binding is ever missing, `firebase functions:delete getIceServers --region us-central1` then deploy again.
+
+To verify TURN actually works, temporarily add `iceTransportPolicy: 'relay'` to the peer connection config on both ends: that forbids direct paths, so pairing succeeding proves the relay is in use.
 
 ### Firestore Security Rules
 
-```javascript
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    // Sessions collection for WebRTC signaling
-    match /sessions/{sessionId} {
-      allow read, write: if true;  // For development
+The production rules live in `firestore.rules` (the deployed copy in the Firebase console should always match that file). They enforce:
 
-      // ICE candidates subcollections
-      match /offerCandidates/{candidateId} {
-        allow read, write: if true;
-      }
-      match /answerCandidates/{candidateId} {
-        allow read, write: if true;
-      }
-    }
-  }
-}
-```
+- **Auth required** — every operation requires `request.auth != null` (anonymous auth); the Firebase config embedded in the APK is not enough to touch the database.
+- **No collection listing** — sessions can only be fetched by exact ID (`allow get`, `allow list: if false`), so joining requires knowing the 6-char session ID from the QR code/link. The ICE candidate subcollections do allow listing, but only within a session whose ID you already know.
+- **Document shape/size validation** — session docs are limited to `createdAt`/`expireAt`/`status`/`offer`/`answer` with size-capped SDP strings; candidate docs to `candidate`/`sdpMLineIndex`/`sdpMid`/`expireAt`. The collection can't be used as free-form storage.
+- **Bounded expiry** — `expireAt` is required on every doc and may be at most 2 hours in the future, so the TTL cleanup can't be sidestepped with a far-future expiry.
 
 ## Data Channel Protocol
 

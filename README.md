@@ -185,9 +185,8 @@ The browser fallback remote lives in [`web-remote/`](web-remote/).
 npm run web-remote:dev
 ```
 
-It expects the same Firebase public env vars as the Expo app and supports optional TURN
-configuration with `EXPO_PUBLIC_TURN_URL`, `EXPO_PUBLIC_TURN_USERNAME`, and
-`EXPO_PUBLIC_TURN_CREDENTIAL`.
+It expects the same Firebase public env vars as the Expo app, and gets TURN credentials
+from the same `getIceServers` Cloud Function.
 
 ### Release Build
 
@@ -224,13 +223,26 @@ EXPO_PUBLIC_FIREBASE_APP_ID=...
 
 ### WebRTC Configuration
 
-STUN servers are configured in `src/config/webrtc.ts` (Google's public STUN servers by default). For better NAT traversal you can optionally add a TURN server via environment variables (only used as fallback when direct P2P fails):
+The STUN server list lives in `shared/ice.ts`, shared by the app and the web remote.
 
+TURN (needed when both devices are on mobile data, or behind symmetric NAT) uses
+Cloudflare Realtime, which only issues short-lived credentials through its API. Both
+clients call the `getIceServers` Cloud Function in `functions/` to mint them; there is
+nothing to configure in `.env`. If that call fails, pairing falls back to STUN only.
+
+Deploying the function requires two config values, both from the Cloudflare
+dashboard (Realtime → TURN Keys):
+
+```bash
+cp functions/.env.example functions/.env   # then fill in CLOUDFLARE_TURN_TOKEN_ID
+firebase functions:secrets:set CLOUDFLARE_TURN_API_TOKEN
+firebase deploy --only functions
 ```
-EXPO_PUBLIC_TURN_URL=turn:your-turn-server.com:3478
-EXPO_PUBLIC_TURN_USERNAME=username
-EXPO_PUBLIC_TURN_CREDENTIAL=password
-```
+
+The API token is a Secret Manager secret and never touches the repo.
+`CLOUDFLARE_TURN_TOKEN_ID` only names the key and can't mint credentials on its
+own, but `functions/.env` is untracked too — this repo is public, and there's no
+reason to publish an identifier that points at your Cloudflare account.
 
 ### Camera Permissions
 
