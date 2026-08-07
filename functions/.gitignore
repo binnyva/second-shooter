@@ -1,0 +1,6 @@
+node_modules/
+lib/
+
+# Secret overrides for local emulator runs (never commit)
+.env.local
+.secret.local
