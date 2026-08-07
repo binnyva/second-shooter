@@ -1,0 +1,8 @@
+{
+  "projects": {
+    "default": "second-shooter-9ae40",
+    "second-shooter": "second-shooter-9ae40"
+  },
+  "targets": {},
+  "etags": {}
+}

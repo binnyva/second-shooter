@@ -45,3 +45,7 @@ yarn-error.*
 0Meta/
 coverage/
 .claude/
+
+# Firebase CLI debug output
+firebase-debug.log
+firebase-debug.*.log

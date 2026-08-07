@@ -1,0 +1,86 @@
+rules_version = '2';
+
+// Signaling rules for Second Shooter.
+//
+// Deploy from the Firebase console (Firestore Database → Rules) or with:
+//   firebase deploy --only firestore:rules
+//
+// Requires Anonymous Auth to be enabled (Authentication → Sign-in method),
+// since every client signs in anonymously before touching Firestore.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Session IDs come from generateSessionId(): 6 chars from an alphabet
+    // that excludes the look-alikes I, O, 0, 1.
+    function isValidSessionId(sessionId) {
+      return sessionId.matches('[A-HJ-NP-Z2-9]{6}');
+    }
+
+    // expireAt drives the Firestore TTL policies (one per collection group:
+    // sessions, offerCandidates, answerCandidates). The 2h cap keeps anyone
+    // from parking data with a far-future expiry.
+    function isValidExpiry(expireAt) {
+      return expireAt is timestamp
+        && expireAt < request.time + duration.value(2, 'h');
+    }
+
+    function isValidSdp(desc, kind) {
+      return desc.keys().hasOnly(['type', 'sdp'])
+        && desc.type == kind
+        && desc.sdp is string
+        && desc.sdp.size() < 20000;
+    }
+
+    // Full document shape after the write (merge writes are validated
+    // against the resulting document, so this covers partial updates too).
+    function isValidSessionDoc() {
+      return request.resource.data.keys().hasOnly(['createdAt', 'expireAt', 'status', 'offer', 'answer'])
+        && isValidExpiry(request.resource.data.expireAt)
+        && request.resource.data.status in ['waiting', 'offer_sent', 'connected']
+        && (!('offer' in request.resource.data) || isValidSdp(request.resource.data.offer, 'offer'))
+        && (!('answer' in request.resource.data) || isValidSdp(request.resource.data.answer, 'answer'));
+    }
+
+    function isValidCandidate() {
+      return request.resource.data.keys().hasOnly(['candidate', 'sdpMLineIndex', 'sdpMid', 'expireAt'])
+        && isValidExpiry(request.resource.data.expireAt)
+        && request.resource.data.candidate is string
+        && request.resource.data.candidate.size() < 2000
+        && (request.resource.data.sdpMLineIndex is int || request.resource.data.sdpMLineIndex == null)
+        && (request.resource.data.sdpMid is string || request.resource.data.sdpMid == null);
+    }
+
+    match /sessions/{sessionId} {
+      // Reads only by exact document ID; the collection can never be listed,
+      // so joining a session requires knowing its ID (from the QR code/link).
+      allow get: if isSignedIn();
+      allow list: if false;
+
+      allow create: if isSignedIn()
+        && isValidSessionId(sessionId)
+        && isValidSessionDoc()
+        && request.resource.data.createdAt == request.time;
+      allow update: if isSignedIn()
+        && isValidSessionDoc()
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isSignedIn();
+
+      match /offerCandidates/{candidateId} {
+        // Listing here is fine: it's scoped to a session ID you already know.
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && isValidCandidate();
+        allow update, delete: if false;
+      }
+
+      match /answerCandidates/{candidateId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && isValidCandidate();
+        allow update, delete: if false;
+      }
+    }
+  }
+}
