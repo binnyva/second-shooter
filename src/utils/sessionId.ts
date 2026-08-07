@@ -1,13 +1,16 @@
 // Generate a unique session ID for pairing
-// Uses a combination of timestamp and random characters
+// Uses cryptographically secure random bytes (session IDs guard access to the camera)
 
-const CHARACTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Excluded similar-looking chars: I, O, 0, 1
+import * as Crypto from 'expo-crypto';
+
+// Must have a length that divides 256 evenly, so `byte % length` is unbiased
+const CHARACTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 32 chars; excluded similar-looking: I, O, 0, 1
 
 export function generateSessionId(length: number = 6): string {
+  const bytes = Crypto.getRandomBytes(length);
   let result = '';
   for (let i = 0; i < length; i++) {
-    const randomIndex = Math.floor(Math.random() * CHARACTERS.length);
-    result += CHARACTERS[randomIndex];
+    result += CHARACTERS[bytes[i] % CHARACTERS.length];
   }
   return result;
 }

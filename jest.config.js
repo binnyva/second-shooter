@@ -8,6 +8,7 @@ module.exports = {
   setupFilesAfterEnv: ['<rootDir>/src/__tests__/setup.ts'],
   moduleNameMapper: {
     '^react-native-vision-camera$': '<rootDir>/src/__tests__/__mocks__/react-native-vision-camera.ts',
+    '^expo-crypto$': '<rootDir>/src/__tests__/__mocks__/expo-crypto.ts',
     '^react-native-webrtc$': '<rootDir>/src/__tests__/__mocks__/react-native-webrtc.ts',
     '^firebase/firestore$': '<rootDir>/src/__tests__/__mocks__/firebase-firestore.ts',
     '^../config/firebase$': '<rootDir>/src/__tests__/__mocks__/firebase-config.ts',
