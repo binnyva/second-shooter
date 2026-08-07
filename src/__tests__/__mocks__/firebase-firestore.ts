@@ -24,6 +24,10 @@ export const onSnapshot = jest.fn((ref, callback) => {
 
 export const serverTimestamp = jest.fn(() => ({ _serverTimestamp: true }));
 
+export const Timestamp = {
+  fromMillis: jest.fn((ms: number) => ({ toMillis: () => ms })),
+};
+
 export type Unsubscribe = () => void;
 export type DocumentReference = { id: string; path: string };
 export type CollectionReference = { path: string };

@@ -5,6 +5,7 @@ import {
   getDoc,
   onSnapshot,
   setDoc,
+  Timestamp,
   type Firestore,
   type Unsubscribe,
 } from 'firebase/firestore';
@@ -17,6 +18,14 @@ import type {
 const SESSIONS_COLLECTION = 'sessions';
 const OFFER_CANDIDATES_SUBCOLLECTION = 'offerCandidates';
 const ANSWER_CANDIDATES_SUBCOLLECTION = 'answerCandidates';
+
+// Matches the mobile app's SESSION_TTL_MS: expireAt drives the Firestore TTL
+// policies that garbage-collect stale docs (rules cap it at 2 hours out).
+const SESSION_TTL_MS = 60 * 60 * 1000;
+
+function sessionExpireAt(): Timestamp {
+  return Timestamp.fromMillis(Date.now() + SESSION_TTL_MS);
+}
 
 type IceCandidateCallback = (candidate: IceCandidate) => void;
 type OfferCallback = (offer: SignalingOffer) => void;
@@ -80,6 +89,7 @@ export class BrowserSignalingClient {
       candidate: candidate.candidate,
       sdpMLineIndex: candidate.sdpMLineIndex,
       sdpMid: candidate.sdpMid,
+      expireAt: sessionExpireAt(),
     });
   }
 

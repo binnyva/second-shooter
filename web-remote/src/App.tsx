@@ -10,7 +10,7 @@ import type {
   StreamMode,
 } from '@shared/protocol';
 import { parseSessionIdFromInput } from '@shared/session-link';
-import { db } from './lib/firebase';
+import { db, ensureSignedIn } from './lib/firebase';
 import { BrowserSignalingClient } from './lib/signaling';
 import { BrowserWebRTCClient } from './lib/webrtc';
 
@@ -241,6 +241,17 @@ export default function App() {
       setConnectionState('connecting');
       setErrorMessage(null);
       setLatestFrame(null);
+
+      try {
+        await ensureSignedIn();
+      } catch (error) {
+        console.error('Anonymous sign-in failed', error);
+        if (!isCancelled) {
+          setConnectionState('failed');
+          setErrorMessage('Could not connect to the signaling service. Check your network and try again.');
+        }
+        return;
+      }
 
       const signaling = new BrowserSignalingClient(db);
       signalingRef.current = signaling;

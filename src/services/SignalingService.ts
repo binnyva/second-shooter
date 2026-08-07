@@ -7,18 +7,29 @@ import {
   addDoc,
   onSnapshot,
   serverTimestamp,
+  Timestamp,
   Unsubscribe,
   DocumentReference,
   CollectionReference,
 } from 'firebase/firestore';
 import {
   db,
+  ensureSignedIn,
   SESSIONS_COLLECTION,
   OFFER_CANDIDATES_SUBCOLLECTION,
   ANSWER_CANDIDATES_SUBCOLLECTION,
 } from '../config/firebase';
 import { generateSessionId } from '../utils/sessionId';
 import { SignalingOffer, SignalingAnswer, IceCandidate } from '../types';
+
+// Sessions are short-lived pairing artifacts. expireAt drives the Firestore
+// TTL policies that garbage-collect abandoned session and candidate docs;
+// the security rules cap it at 2 hours out.
+const SESSION_TTL_MS = 60 * 60 * 1000;
+
+function sessionExpireAt(): Timestamp {
+  return Timestamp.fromMillis(Date.now() + SESSION_TTL_MS);
+}
 
 type IceCandidateCallback = (candidate: IceCandidate) => void;
 type OfferCallback = (offer: SignalingOffer) => void;
@@ -33,6 +44,8 @@ class SignalingService {
 
   // Create a new signaling session
   async createSession(): Promise<string> {
+    await ensureSignedIn();
+
     // Reset processed flags for new session
     this.processedOfferSdp = null;
     this.processedAnswerSdp = null;
@@ -42,6 +55,7 @@ class SignalingService {
 
     await setDoc(sessionRef, {
       createdAt: serverTimestamp(),
+      expireAt: sessionExpireAt(),
       status: 'waiting',
     });
 
@@ -52,6 +66,8 @@ class SignalingService {
 
   // Join an existing session
   async joinSession(sessionId: string): Promise<boolean> {
+    await ensureSignedIn();
+
     // Reset processed flags for new session
     this.processedOfferSdp = null;
     this.processedAnswerSdp = null;
@@ -162,6 +178,7 @@ class SignalingService {
       candidate: candidate.candidate,
       sdpMLineIndex: candidate.sdpMLineIndex,
       sdpMid: candidate.sdpMid,
+      expireAt: sessionExpireAt(),
     });
   }
 
@@ -203,9 +220,9 @@ class SignalingService {
   // Delete session and cleanup
   async deleteSession(sessionId: string): Promise<void> {
     try {
-      // Delete ICE candidates subcollections would require a cloud function
-      // For now, just delete the main session document
-      // The old sessions will be cleaned up by Firestore TTL rules or manual cleanup
+      // Only the main session document is deleted here; candidate subcollection
+      // docs (and abandoned sessions) are garbage-collected by the Firestore
+      // TTL policies on their expireAt fields.
       const sessionRef = doc(db, SESSIONS_COLLECTION, sessionId);
       await deleteDoc(sessionRef);
     } catch (error) {
