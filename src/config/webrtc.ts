@@ -1,31 +1,54 @@
+import { httpsCallable } from 'firebase/functions';
+import { ensureSignedIn, functions } from './firebase';
+import {
+  buildIceServers,
+  ICE_CANDIDATE_POOL_SIZE,
+  ICE_SERVERS_FETCH_TIMEOUT_MS,
+  ICE_SERVERS_FUNCTION_NAME,
+  parseIceServersResult,
+  STUN_ICE_SERVERS,
+} from '../../shared/ice';
 import { IceServer } from '../types';
 
-// ICE servers for NAT traversal
-// Using free public STUN servers
-// For production, consider adding TURN servers for better reliability
-const iceServers: IceServer[] = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
-];
+/**
+ * Fetches STUN + TURN servers for a new peer connection.
+ *
+ * TURN credentials are minted per request by the getIceServers Cloud Function
+ * (see functions/src/index.ts), so this is async and must be awaited before
+ * constructing an RTCPeerConnection. If the call fails we pair over STUN only,
+ * which is what the app did before TURN existed.
+ */
+export async function getIceServers(): Promise<IceServer[]> {
+  try {
+    // The function rejects unauthenticated callers; signing in is idempotent
+    // and normally already done by the signaling service.
+    await ensureSignedIn();
 
-if (process.env.EXPO_PUBLIC_TURN_URL) {
-  iceServers.push({
-    urls: process.env.EXPO_PUBLIC_TURN_URL,
-    username: process.env.EXPO_PUBLIC_TURN_USERNAME,
-    credential: process.env.EXPO_PUBLIC_TURN_CREDENTIAL,
-  });
+    const callable = httpsCallable(functions, ICE_SERVERS_FUNCTION_NAME, {
+      timeout: ICE_SERVERS_FETCH_TIMEOUT_MS,
+    });
+    const { data } = await callable();
+    const turnServers = parseIceServersResult(data);
+
+    if (turnServers.length === 0) {
+      console.warn('[WebRTC] getIceServers returned no TURN servers, using STUN only');
+      return STUN_ICE_SERVERS;
+    }
+
+    return buildIceServers(turnServers);
+  } catch (error) {
+    console.warn('[WebRTC] Failed to fetch TURN credentials, using STUN only:', error);
+    return STUN_ICE_SERVERS;
+  }
 }
 
-export const ICE_SERVERS: IceServer[] = iceServers;
-
 // WebRTC configuration
-export const RTC_CONFIG: RTCConfiguration = {
-  iceServers: ICE_SERVERS,
-  iceCandidatePoolSize: 10,
-};
+export async function getRtcConfig(): Promise<RTCConfiguration> {
+  return {
+    iceServers: await getIceServers(),
+    iceCandidatePoolSize: ICE_CANDIDATE_POOL_SIZE,
+  };
+}
 
 // Data channel configuration
 export const DATA_CHANNEL_CONFIG: RTCDataChannelInit = {

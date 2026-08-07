@@ -27,11 +27,7 @@ export interface SessionInfo {
 }
 
 // ICE server configuration
-export interface IceServer {
-  urls: string | string[];
-  username?: string;
-  credential?: string;
-}
+export type { IceServerConfig as IceServer } from '../../shared/ice';
 
 // Re-export settings types
 export * from './settings';

@@ -61,8 +61,15 @@ export function usePeerConnection({
       return;
     }
 
-    webRTCService.createPeerConnection();
+    // Claim the slot before awaiting so a second call during the TURN
+    // credential fetch can't create a competing peer connection.
     isInitializedRef.current = true;
+    try {
+      await webRTCService.createPeerConnection();
+    } catch (error) {
+      isInitializedRef.current = false;
+      throw error;
+    }
 
     // Set up callbacks
     webRTCService.onConnectionState((state) => {

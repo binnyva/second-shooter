@@ -294,7 +294,12 @@ export default function App() {
       });
 
       rtcRef.current = rtc;
-      rtc.createConnection();
+      await rtc.createConnection();
+
+      if (isCancelled) {
+        rtc.close();
+        return;
+      }
 
       signaling.onSessionMissing(() => {
         if (!isCancelled) {

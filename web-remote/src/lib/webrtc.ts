@@ -1,20 +1,44 @@
+import { httpsCallable } from 'firebase/functions';
 import type { Command, ConnectionState, Response } from '@shared/protocol';
 import type { IceCandidate } from '@shared/signaling';
+import {
+  buildIceServers,
+  ICE_CANDIDATE_POOL_SIZE,
+  ICE_SERVERS_FETCH_TIMEOUT_MS,
+  ICE_SERVERS_FUNCTION_NAME,
+  parseIceServersResult,
+  STUN_ICE_SERVERS,
+} from '@shared/ice';
+import { ensureSignedIn, functions } from './firebase';
 
-const ICE_SERVERS: RTCIceServer[] = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
-];
+/**
+ * Fetches STUN + TURN servers for a new peer connection.
+ *
+ * TURN credentials are minted per request by the getIceServers Cloud Function.
+ * If that call fails we pair over STUN only — the behaviour before TURN.
+ */
+async function getIceServers(): Promise<RTCIceServer[]> {
+  try {
+    // The function rejects unauthenticated callers; signing in is idempotent
+    // and normally already done before joining the session.
+    await ensureSignedIn();
 
-if (import.meta.env.EXPO_PUBLIC_TURN_URL) {
-  ICE_SERVERS.push({
-    urls: import.meta.env.EXPO_PUBLIC_TURN_URL,
-    username: import.meta.env.EXPO_PUBLIC_TURN_USERNAME,
-    credential: import.meta.env.EXPO_PUBLIC_TURN_CREDENTIAL,
-  });
+    const callable = httpsCallable(functions, ICE_SERVERS_FUNCTION_NAME, {
+      timeout: ICE_SERVERS_FETCH_TIMEOUT_MS,
+    });
+    const { data } = await callable();
+    const turnServers = parseIceServersResult(data);
+
+    if (turnServers.length === 0) {
+      console.warn('[web-remote] getIceServers returned no TURN servers, using STUN only');
+      return STUN_ICE_SERVERS;
+    }
+
+    return buildIceServers(turnServers);
+  } catch (error) {
+    console.warn('[web-remote] Failed to fetch TURN credentials, using STUN only', error);
+    return STUN_ICE_SERVERS;
+  }
 }
 
 type RemoteStreamCallback = (stream: MediaStream) => void;
@@ -41,12 +65,13 @@ export class BrowserWebRTCClient {
     this.callbacks = callbacks;
   }
 
-  createConnection(): void {
+  // Async because TURN credentials are minted on demand by a Cloud Function.
+  async createConnection(): Promise<void> {
     this.close();
 
     this.peerConnection = new RTCPeerConnection({
-      iceServers: ICE_SERVERS,
-      iceCandidatePoolSize: 10,
+      iceServers: await getIceServers(),
+      iceCandidatePoolSize: ICE_CANDIDATE_POOL_SIZE,
     });
 
     this.peerConnection.onicecandidate = (event) => {

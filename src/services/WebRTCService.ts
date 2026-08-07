@@ -6,7 +6,7 @@ import {
   mediaDevices,
   MediaStreamTrack,
 } from 'react-native-webrtc';
-import { RTC_CONFIG, DATA_CHANNEL_CONFIG, COMMAND_CHANNEL_NAME } from '../config/webrtc';
+import { getRtcConfig, DATA_CHANNEL_CONFIG, COMMAND_CHANNEL_NAME } from '../config/webrtc';
 import { Command, Response, IceCandidate, ConnectionState, FrameDataMessage } from '../types';
 
 type CommandCallback = (command: Command) => void;
@@ -50,12 +50,14 @@ class WebRTCService {
   private onFrameDataCallback: FrameDataCallback | null = null;
 
   // Create peer connection
-  createPeerConnection(): RTCPeerConnection {
+  // Async because TURN credentials are minted on demand by a Cloud Function.
+  async createPeerConnection(): Promise<RTCPeerConnection> {
     if (this.peerConnection) {
       this.peerConnection.close();
     }
 
-    this.peerConnection = new RTCPeerConnection(RTC_CONFIG as any);
+    const rtcConfig = await getRtcConfig();
+    this.peerConnection = new RTCPeerConnection(rtcConfig as any);
 
     // Handle ICE candidates
     (this.peerConnection as any).onicecandidate = (event: RTCPeerConnectionIceEvent) => {
