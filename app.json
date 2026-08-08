@@ -71,7 +71,7 @@
           "cameraPermissionText": "$(PRODUCT_NAME) needs access to your camera to capture photos and videos",
           "enableMicrophonePermission": true,
           "microphonePermissionText": "$(PRODUCT_NAME) needs access to your microphone to record videos with audio",
-          "enableFrameProcessors": true
+          "enableFrameProcessors": false
         }
       ],
       [
@@ -81,8 +81,7 @@
           "savePhotosPermission": "$(PRODUCT_NAME) saves photos and videos to your photo library"
         }
       ],
-      "expo-router",
-      "./plugins/withFrameToJpegPlugin.js"
+      "expo-router"
     ]
   }
 }

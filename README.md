@@ -28,7 +28,7 @@ If the second device does not have the app installed, the QR code can now open t
 - **Expo Router** - File-based navigation (`app/` directory)
 
 ### Key Libraries
-- **react-native-vision-camera** - Advanced camera functionality and control (frame processors enabled)
+- **react-native-vision-camera** - Advanced camera functionality and control
 - **react-native-webrtc** - Peer-to-peer connection and video streaming
 - **expo-camera** - QR code scanning for pairing
 - **react-native-qrcode-svg** - QR code generation
@@ -132,7 +132,6 @@ second-shooter/
 │   ├── signaling.ts                # Signaling message types
 │   └── session-link.ts             # Session URL build/parse helpers
 ├── web-remote/                     # Browser-based remote (Vite + React)
-├── plugins/                        # Expo config plugins
 ├── android/                        # Android native code
 ├── ios/                            # iOS native code
 ├── app.json                        # Expo configuration (permissions, deep links)
@@ -332,7 +331,7 @@ The app requires camera, microphone, and photo library permissions. These are co
 
 ## TODO / Future Improvements
 
-- **Unified Camera Architecture**: Currently WebRTC's `getUserMedia` and react-native-vision-camera compete for camera access, causing preview loss during capture. A future improvement would be to use vision-camera's frame processor to feed frames directly to WebRTC, eliminating the resource conflict and enabling seamless preview during photo/video capture.
+- **Unified Camera Architecture**: Currently WebRTC's `getUserMedia` and react-native-vision-camera compete for camera access, causing preview loss during capture. A future improvement would be to use vision-camera's frame processor to feed frames directly to WebRTC, eliminating the resource conflict and enabling seamless preview during photo/video capture. Note that frame processors are currently disabled (`enableFrameProcessors: false` in `app.json`); pursuing this would mean re-enabling them and re-adding `react-native-worklets-core`.
 
 ## License
 

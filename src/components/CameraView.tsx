@@ -7,7 +7,6 @@ import {
   useMicrophonePermission,
   PhotoFile,
   VideoFile,
-  ReadonlyFrameProcessor,
 } from 'react-native-vision-camera';
 import { CameraControls } from './CameraControls';
 import { cameraService } from '../services/CameraService';
@@ -21,7 +20,6 @@ interface CameraViewProps {
   externalState?: CameraState;
   controlsDisabled?: boolean;
   showControls?: boolean;
-  frameProcessor?: ReadonlyFrameProcessor;
 }
 
 export function CameraView({
@@ -31,7 +29,6 @@ export function CameraView({
   externalState,
   controlsDisabled = false,
   showControls = true,
-  frameProcessor,
 }: CameraViewProps) {
   const cameraRef = useRef<Camera>(null);
   const { hasPermission: hasCameraPermission } = useCameraPermission();
@@ -179,7 +176,6 @@ export function CameraView({
         audio={true}
         zoom={cameraState.zoom}
         enableZoomGesture={true}
-        frameProcessor={frameProcessor}
       />
 
       {showControls && (

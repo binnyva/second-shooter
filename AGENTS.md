@@ -102,7 +102,7 @@ Shared between the mobile app and the web remote:
 ### Tech Stack
 - **Framework**: Expo (with prebuild for native modules)
 - **Navigation**: Expo Router
-- **Camera**: react-native-vision-camera (frame processors enabled)
+- **Camera**: react-native-vision-camera (frame processors disabled — frame-based preview uses `takeSnapshot()`, not a frame processor)
 - **P2P/Streaming**: react-native-webrtc
 - **QR**: expo-camera (scanner), react-native-qrcode-svg (generator)
 - **Signaling**: Firebase Firestore
@@ -168,8 +168,6 @@ Shared between the mobile app and the web remote:
 │   └── .env.example              # Cloudflare TURN key ID template (.env is untracked)
 ├── web-remote/                   # Browser-based remote (Vite + React)
 │   └── src/lib/                  # firebase, signaling, webrtc clients
-├── plugins/                      # Expo config plugins
-│   └── withFrameToJpegPlugin.js
 ├── app.json                      # Expo configuration with permissions & deep links
 ├── .env.example                  # Firebase env var template
 └── package.json
