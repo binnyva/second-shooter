@@ -16,7 +16,11 @@ export class RTCPeerConnection {
   createOffer = jest.fn().mockResolvedValue({ type: 'offer', sdp: 'mock-offer-sdp' });
   createAnswer = jest.fn().mockResolvedValue({ type: 'answer', sdp: 'mock-answer-sdp' });
   setLocalDescription = jest.fn().mockResolvedValue(undefined);
-  setRemoteDescription = jest.fn().mockResolvedValue(undefined);
+  // Mirrors the real behaviour: the description becomes readable afterwards,
+  // which is what gates ICE candidate application.
+  setRemoteDescription = jest.fn(async (description: RTCSessionDescription) => {
+    this.remoteDescription = description;
+  });
   addIceCandidate = jest.fn().mockResolvedValue(undefined);
   createDataChannel = jest.fn().mockReturnValue({
     onopen: null,

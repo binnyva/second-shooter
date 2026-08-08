@@ -46,65 +46,90 @@ export function usePeerConnection({
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [isDataChannelReady, setIsDataChannelReady] = useState(false);
 
-  const isInitializedRef = useRef(false);
+  // Holds the in-flight (or completed) connection setup so concurrent callers
+  // await the same one. Cleared by close().
+  const connectionPromiseRef = useRef<Promise<void> | null>(null);
+  const generationRef = useRef<number | null>(null);
 
   // Cleanup on unmount
+  //
+  // WebRTCService is a singleton but RemoteScreen is exported from three routes
+  // (/remote plus both deep-link routes), so two mounts can briefly overlap.
+  // Only tear down the connection this mount created — otherwise the outgoing
+  // screen closes the connection the incoming one just set up, and every
+  // subsequent candidate/offer hits a null peer connection.
   useEffect(() => {
     return () => {
-      webRTCService.close();
+      if (generationRef.current === webRTCService.getGeneration()) {
+        webRTCService.close();
+      }
+      generationRef.current = null;
+      connectionPromiseRef.current = null;
     };
   }, []);
 
   // Create peer connection
+  //
+  // Concurrent callers must await the same setup rather than skipping it.
+  // Minting TURN credentials is a network round trip, so there is a multi-second
+  // window during which returning early would tell the caller the connection is
+  // ready when peerConnection is still null — and the caller would then wire up
+  // signaling listeners that immediately fire against nothing.
   const createConnection = useCallback(async (): Promise<void> => {
-    if (isInitializedRef.current) {
-      return;
+    if (connectionPromiseRef.current) {
+      return connectionPromiseRef.current;
     }
 
-    // Claim the slot before awaiting so a second call during the TURN
-    // credential fetch can't create a competing peer connection.
-    isInitializedRef.current = true;
-    try {
+    const setup = (async () => {
       await webRTCService.createPeerConnection();
+      generationRef.current = webRTCService.getGeneration();
+
+      // Set up callbacks
+      webRTCService.onConnectionState((state) => {
+        setConnectionState(state);
+      });
+
+      webRTCService.onRemoteStream((stream) => {
+        setRemoteStream(stream);
+        onRemoteStream?.(stream);
+      });
+
+      webRTCService.onIceCandidate((candidate) => {
+        onIceCandidate?.(candidate);
+      });
+
+      if (onCommand) {
+        webRTCService.onCommand(onCommand);
+      }
+
+      if (onResponse) {
+        webRTCService.onResponse(onResponse);
+      }
+
+      webRTCService.onDataChannelOpen(() => {
+        console.log('Data channel is now ready');
+        setIsDataChannelReady(true);
+        onDataChannelOpen?.();
+      });
+
+      // Camera device creates the data channel
+      if (role === 'camera') {
+        webRTCService.createDataChannel();
+      }
+
+      setConnectionState('connecting');
+    })();
+
+    // Assigned before the first await returns to the caller, so a second call
+    // can never slip in and start a competing connection.
+    connectionPromiseRef.current = setup;
+
+    try {
+      await setup;
     } catch (error) {
-      isInitializedRef.current = false;
+      connectionPromiseRef.current = null;
       throw error;
     }
-
-    // Set up callbacks
-    webRTCService.onConnectionState((state) => {
-      setConnectionState(state);
-    });
-
-    webRTCService.onRemoteStream((stream) => {
-      setRemoteStream(stream);
-      onRemoteStream?.(stream);
-    });
-
-    webRTCService.onIceCandidate((candidate) => {
-      onIceCandidate?.(candidate);
-    });
-
-    if (onCommand) {
-      webRTCService.onCommand(onCommand);
-    }
-
-    if (onResponse) {
-      webRTCService.onResponse(onResponse);
-    }
-
-    webRTCService.onDataChannelOpen(() => {
-      console.log('Data channel is now ready');
-      setIsDataChannelReady(true);
-      onDataChannelOpen?.();
-    });
-
-    // Camera device creates the data channel
-    if (role === 'camera') {
-      webRTCService.createDataChannel();
-    }
-
-    setConnectionState('connecting');
   }, [role, onCommand, onResponse, onRemoteStream, onIceCandidate, onDataChannelOpen]);
 
   // Create SDP offer (camera device)
@@ -193,7 +218,8 @@ export function usePeerConnection({
   // Close connection
   const close = useCallback((): void => {
     webRTCService.close();
-    isInitializedRef.current = false;
+    generationRef.current = null;
+    connectionPromiseRef.current = null;
     setConnectionState('disconnected');
     setRemoteStream(null);
     setLocalStream(null);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, StyleSheet, Text, TouchableOpacity, Dimensions } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { parseSessionIdFromInput } from '../../shared/session-link';
@@ -16,6 +16,12 @@ export function QRCodeScanner({ onScan, onClose }: QRCodeScannerProps) {
   const [scanned, setScanned] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // expo-camera fires onBarcodeScanned repeatedly while the code is in frame.
+  // The `scanned` state doesn't flip until the next render, so a state check
+  // lets several duplicate scans through — each one starting another connection
+  // attempt. The ref blocks them synchronously.
+  const scannedRef = useRef(false);
+
   useEffect(() => {
     if (!permission?.granted) {
       requestPermission();
@@ -23,7 +29,7 @@ export function QRCodeScanner({ onScan, onClose }: QRCodeScannerProps) {
   }, [permission, requestPermission]);
 
   const handleBarCodeScanned = ({ type, data }: { type: string; data: string }) => {
-    if (scanned) return;
+    if (scannedRef.current) return;
 
     const sessionId = parseSessionIdFromInput(data);
 
@@ -32,12 +38,14 @@ export function QRCodeScanner({ onScan, onClose }: QRCodeScannerProps) {
       return;
     }
 
+    scannedRef.current = true;
     setScanned(true);
     setError(null);
     onScan(sessionId);
   };
 
   const handleRetry = () => {
+    scannedRef.current = false;
     setScanned(false);
     setError(null);
   };

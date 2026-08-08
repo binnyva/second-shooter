@@ -37,6 +37,14 @@ class WebRTCService {
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
 
+  // ICE candidates that arrived before there was a remote description to
+  // attach them to. See addIceCandidate for why this is the normal case.
+  private pendingIceCandidates: IceCandidate[] = [];
+
+  // Bumped on every create/close. Callers that tear down on unmount pass the
+  // generation they created so a stale screen can't close a live connection.
+  private generation = 0;
+
   // Lock to prevent concurrent stream switching operations
   private isSwitchingStream: boolean = false;
   private pendingSwitch: { facingMode: 'front' | 'back'; zoom: number } | null = null;
@@ -54,7 +62,13 @@ class WebRTCService {
   async createPeerConnection(): Promise<RTCPeerConnection> {
     if (this.peerConnection) {
       this.peerConnection.close();
+      // Null it before awaiting: minting TURN credentials takes a round trip,
+      // and anything arriving in that window should queue rather than be
+      // applied to a connection that's already closed.
+      this.peerConnection = null;
     }
+    this.pendingIceCandidates = [];
+    this.generation++;
 
     const rtcConfig = await getRtcConfig();
     this.peerConnection = new RTCPeerConnection(rtcConfig as any);
@@ -254,10 +268,14 @@ class WebRTCService {
     const signalingState = (this.peerConnection as any).signalingState;
     if (description.type === 'answer' && signalingState !== 'have-local-offer') {
       console.log(`Ignoring answer - signaling state is '${signalingState}', expected 'have-local-offer'`);
+      // A duplicate description still means an earlier one landed, so any
+      // candidates buffered since then are ready to apply.
+      await this.flushPendingIceCandidates();
       return;
     }
     if (description.type === 'offer' && signalingState !== 'stable') {
       console.log(`Ignoring offer - signaling state is '${signalingState}', expected 'stable'`);
+      await this.flushPendingIceCandidates();
       return;
     }
 
@@ -266,21 +284,58 @@ class WebRTCService {
       sdp: description.sdp || '',
     });
     await this.peerConnection.setRemoteDescription(rtcDescription as any);
+
+    await this.flushPendingIceCandidates();
   }
 
   // Add ICE candidate
+  //
+  // Candidates routinely arrive before we can use them. The camera finishes
+  // gathering while the QR code is still on screen, so when the remote joins,
+  // Firestore replays the whole offerCandidates collection in one batch — and
+  // that listener races the separate session-doc listener carrying the offer.
+  // Queue anything that arrives early and flush once the remote description
+  // is in place.
   async addIceCandidate(candidate: IceCandidate): Promise<void> {
-    if (!this.peerConnection) {
-      throw new Error('Peer connection not initialized');
+    if (!this.peerConnection || !(this.peerConnection as any).remoteDescription) {
+      this.pendingIceCandidates.push(candidate);
+      return;
     }
 
+    await this.applyIceCandidate(candidate);
+  }
+
+  private async applyIceCandidate(candidate: IceCandidate): Promise<void> {
     const rtcCandidate = new RTCIceCandidate({
       candidate: candidate.candidate,
       sdpMLineIndex: candidate.sdpMLineIndex,
       sdpMid: candidate.sdpMid,
     });
 
-    await this.peerConnection.addIceCandidate(rtcCandidate as any);
+    await this.peerConnection!.addIceCandidate(rtcCandidate as any);
+  }
+
+  // Apply candidates that were buffered while the remote description was unset
+  private async flushPendingIceCandidates(): Promise<void> {
+    if (!this.peerConnection || !(this.peerConnection as any).remoteDescription) {
+      return;
+    }
+    if (this.pendingIceCandidates.length === 0) {
+      return;
+    }
+
+    const queued = this.pendingIceCandidates;
+    this.pendingIceCandidates = [];
+    console.log(`[WebRTC] Applying ${queued.length} buffered ICE candidates`);
+
+    for (const candidate of queued) {
+      try {
+        await this.applyIceCandidate(candidate);
+      } catch (error) {
+        // One bad candidate shouldn't stop the rest; ICE only needs one to work.
+        console.warn('[WebRTC] Failed to apply buffered ICE candidate:', error);
+      }
+    }
   }
 
   // Get local media stream for camera
@@ -628,8 +683,16 @@ class WebRTCService {
     return this.dataChannel?.readyState === 'open';
   }
 
+  // Generation of the current peer connection, for close() ownership checks
+  getGeneration(): number {
+    return this.generation;
+  }
+
   // Close connection and cleanup
   close(): void {
+    this.generation++;
+    this.pendingIceCandidates = [];
+
     if (this.dataChannel) {
       this.dataChannel.close();
       this.dataChannel = null;

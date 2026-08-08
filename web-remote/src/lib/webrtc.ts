@@ -59,6 +59,9 @@ export class BrowserWebRTCClient {
   private peerConnection: RTCPeerConnection | null = null;
   private dataChannel: RTCDataChannel | null = null;
   private remoteStream: MediaStream | null = null;
+  // ICE candidates that arrived before there was a remote description to
+  // attach them to. See addIceCandidate for why this is the normal case.
+  private pendingIceCandidates: IceCandidate[] = [];
   private readonly callbacks: BrowserWebRTCClientOptions;
 
   constructor(callbacks: BrowserWebRTCClientOptions) {
@@ -158,20 +161,54 @@ export class BrowserWebRTCClient {
     await this.peerConnection.setRemoteDescription(
       new RTCSessionDescription(description)
     );
+
+    await this.flushPendingIceCandidates();
   }
 
+  // Candidates routinely arrive before we can use them. The camera finishes
+  // gathering while the QR code is still on screen, so when the remote joins,
+  // Firestore replays the whole offerCandidates collection in one batch — and
+  // that listener races the separate session-doc listener carrying the offer.
+  // Queue anything that arrives early and flush once the remote description
+  // is in place.
   async addIceCandidate(candidate: IceCandidate): Promise<void> {
-    if (!this.peerConnection) {
-      throw new Error('Peer connection not initialized');
+    if (!this.peerConnection || !this.peerConnection.remoteDescription) {
+      this.pendingIceCandidates.push(candidate);
+      return;
     }
 
-    await this.peerConnection.addIceCandidate(
+    await this.applyIceCandidate(candidate);
+  }
+
+  private async applyIceCandidate(candidate: IceCandidate): Promise<void> {
+    await this.peerConnection!.addIceCandidate(
       new RTCIceCandidate({
         candidate: candidate.candidate,
         sdpMLineIndex: candidate.sdpMLineIndex,
         sdpMid: candidate.sdpMid,
       })
     );
+  }
+
+  private async flushPendingIceCandidates(): Promise<void> {
+    if (!this.peerConnection?.remoteDescription) {
+      return;
+    }
+    if (this.pendingIceCandidates.length === 0) {
+      return;
+    }
+
+    const queued = this.pendingIceCandidates;
+    this.pendingIceCandidates = [];
+
+    for (const candidate of queued) {
+      try {
+        await this.applyIceCandidate(candidate);
+      } catch (error) {
+        // One bad candidate shouldn't stop the rest; ICE only needs one to work.
+        console.warn('Failed to apply buffered ICE candidate:', error);
+      }
+    }
   }
 
   sendCommand(command: Command): void {
@@ -183,6 +220,8 @@ export class BrowserWebRTCClient {
   }
 
   close(): void {
+    this.pendingIceCandidates = [];
+
     if (this.dataChannel) {
       this.dataChannel.onopen = null;
       this.dataChannel.onclose = null;
