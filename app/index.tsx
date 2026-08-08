@@ -10,11 +10,13 @@ import { useRouter } from 'expo-router';
 import { useIsFocused } from '@react-navigation/native';
 import {
   Camera,
+  PhotoFile,
   useCameraDevice,
   useCameraPermission,
   useMicrophonePermission,
 } from 'react-native-vision-camera';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as MediaLibrary from 'expo-media-library';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { CameraControls } from '../src/components/CameraControls';
 import { QRCodeDisplay } from '../src/components/QRCodeDisplay';
@@ -26,6 +28,7 @@ import { useSignaling } from '../src/hooks/useSignaling';
 import { usePeerConnection } from '../src/hooks/usePeerConnection';
 import { useSettings } from '../src/hooks/useSettings';
 import { useVolumeShutter } from '../src/hooks/useVolumeShutter';
+import { useCaptureController } from '../src/hooks/useCaptureController';
 import { requestMediaLibraryPermission } from '../src/utils/permissions';
 import { detectLenses } from '../src/utils/lensDetection';
 import { determineStreamMode } from '../src/utils/streamMode';
@@ -160,70 +163,12 @@ export default function CameraScreen() {
   const handleCommand = useCallback(async (command: Command) => {
     switch (command.type) {
       case 'TAKE_PHOTO':
-        try {
-          // If WebRTC is using the camera, temporarily release it for vision-camera
-          const wasUsingWebRTC = streamModeRef.current === 'webrtc';
-          if (wasUsingWebRTC) {
-            pauseLocalStream();
-            setIsWebRTCUsingCamera(false);
-            await waitForCameraInit();
-          }
-
-          // Take a snapshot FIRST for preview (captures what's about to be photographed)
-          // This is small enough to send over the data channel
-          let previewBase64: string | null = null;
-          try {
-            const snapshotPath = await takeSnapshot();
-            if (snapshotPath) {
-              const fileUri = snapshotPath.startsWith('file://') ? snapshotPath : `file://${snapshotPath}`;
-              previewBase64 = await FileSystem.readAsStringAsync(fileUri, {
-                encoding: FileSystem.EncodingType.Base64,
-              });
-              await FileSystem.deleteAsync(fileUri, { idempotent: true });
-            }
-          } catch (snapshotError) {
-            console.error('Error taking preview snapshot:', snapshotError);
-          }
-
-          // Now take the actual full-resolution photo
-          await takePhoto();
-
-          // Resume WebRTC stream if it was active
-          if (wasUsingWebRTC) {
-            setIsWebRTCUsingCamera(true);
-            await new Promise(resolve => setTimeout(resolve, 200));
-            await resumeLocalStream(facingRef.current);
-          }
-
-          sendResponse({ type: 'PHOTO_TAKEN', success: true });
-
-          // Send the preview to remote and update local thumbnail
-          setTimeout(async () => {
-            try {
-              // Update last photo URI for local display
-              const photo = await mediaService.getLastPhoto();
-              if (photo) {
-                setLastPhotoUri(photo.uri);
-              }
-
-              // Send the preview snapshot to remote
-              if (previewBase64) {
-                console.log(`[CAMERA] Sending photo preview to remote: ${previewBase64.length} bytes`);
-                sendResponse({ type: 'PHOTO_DATA', data: previewBase64, timestamp: Date.now() });
-              }
-            } catch (photoError) {
-              console.error('Error sending photo to remote:', photoError);
-            }
-          }, 500);
-        } catch (error) {
-          // Try to resume WebRTC even if photo failed
-          if (streamModeRef.current === 'webrtc') {
-            setIsWebRTCUsingCamera(true);
-            await new Promise(resolve => setTimeout(resolve, 200));
-            await resumeLocalStream(facingRef.current);
-          }
-          sendResponse({ type: 'PHOTO_TAKEN', success: false, error: String(error) });
-        }
+        // Queued, not awaited: a rapid burst from the remote lines up behind
+        // the shot in flight instead of fighting it for the camera. The
+        // controller sends PHOTO_TAKEN and PHOTO_DATA for each one.
+        requestCapture({ notifyRemote: true }).catch((error) => {
+          console.error('Remote capture failed:', error);
+        });
         break;
 
       case 'START_RECORDING':
@@ -270,7 +215,7 @@ export default function CameraScreen() {
         sendStateUpdate(cameraState, availableLenses, false, false, streamModeRef.current);
         break;
     }
-  }, [takePhoto, startRecording, stopRecording, setZoom, updateState, switchCamera, cameraState, availableLenses]);
+  }, [startRecording, stopRecording, setZoom, updateState, switchCamera, cameraState, availableLenses]);
 
   // WebRTC connection
   const {
@@ -292,6 +237,86 @@ export default function CameraScreen() {
     onIceCandidate: async (candidate) => {
       await addSignalingIceCandidate(candidate);
     },
+  });
+
+  // Mirrors isDataChannelReady so the capture callbacks can check it without
+  // going stale, and without logging "data channel not ready" on every local
+  // photo taken with no remote paired.
+  const isDataChannelReadyRef = useRef(false);
+  useEffect(() => {
+    isDataChannelReadyRef.current = isDataChannelReady;
+  }, [isDataChannelReady]);
+
+  const notifyCaptureState = useCallback((capturing: boolean) => {
+    if (!isDataChannelReadyRef.current) return;
+    sendResponse({ type: 'CAPTURE_STATE', capturing });
+  }, [sendResponse]);
+
+  // Every shutter - remote command, volume button, on-screen - goes through
+  // this one queue, so two captures can never overlap on the same camera.
+  const { requestCapture, isCapturingRef } = useCaptureController({
+    takePhoto,
+    takeSnapshot,
+
+    // WebRTC and vision-camera can't hold the camera at the same time.
+    acquireCamera: useCallback(async () => {
+      // Tell the remote its preview is about to go dark for the whole cycle.
+      notifyCaptureState(true);
+
+      const wasUsingWebRTC = streamModeRef.current === 'webrtc';
+      if (wasUsingWebRTC) {
+        pauseLocalStream();
+        setIsWebRTCUsingCamera(false);
+        await waitForCameraInit();
+      }
+      return wasUsingWebRTC;
+    }, [notifyCaptureState, pauseLocalStream, waitForCameraInit]),
+
+    releaseCamera: useCallback(async (wasHeld: boolean) => {
+      try {
+        if (!wasHeld) return;
+        setIsWebRTCUsingCamera(true);
+        await new Promise(resolve => setTimeout(resolve, 200));
+        await resumeLocalStream(facingRef.current);
+      } finally {
+        // Always clears, even if the resume failed - otherwise the remote
+        // would sit behind a review image forever.
+        notifyCaptureState(false);
+      }
+    }, [notifyCaptureState, resumeLocalStream]),
+
+    // Show the freshly captured file straight away rather than waiting on the
+    // gallery write and a MediaLibrary query.
+    onPhotoCaptured: useCallback((photo: PhotoFile) => {
+      setLastPhotoUri(photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`);
+    }, []),
+
+    // Once saved, switch the thumbnail to the gallery asset - the capture temp
+    // file isn't ours to rely on long term.
+    onPhotoSaved: useCallback((asset: MediaLibrary.Asset | null) => {
+      if (asset) {
+        setLastPhotoUri(asset.uri);
+      }
+    }, []),
+
+    onPreviewReady: useCallback(async (path: string, timestamp: number) => {
+      try {
+        const fileUri = path.startsWith('file://') ? path : `file://${path}`;
+        const previewBase64 = await FileSystem.readAsStringAsync(fileUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        await FileSystem.deleteAsync(fileUri, { idempotent: true });
+
+        console.log(`[CAMERA] Sending photo preview to remote: ${previewBase64.length} bytes`);
+        sendResponse({ type: 'PHOTO_DATA', data: previewBase64, timestamp });
+      } catch (error) {
+        console.error('Error sending photo preview to remote:', error);
+      }
+    }, [sendResponse]),
+
+    onRemoteCaptureComplete: useCallback((success: boolean, error?: string) => {
+      sendResponse({ type: 'PHOTO_TAKEN', success, error });
+    }, [sendResponse]),
   });
 
   // Get camera devices with multi-camera support for optical zoom
@@ -527,6 +552,9 @@ export default function CameraScreen() {
     const captureInterval = setInterval(async () => {
       if (!startupComplete) return;
       if (isCapturing) return;
+      // Skipped rather than torn down: restarting this effect would re-pay the
+      // 1s startup delay and freeze the remote's preview after every photo.
+      if (isCapturingRef.current) return;
 
       isCapturing = true;
       try {
@@ -590,14 +618,8 @@ export default function CameraScreen() {
   // Actually take the photo (called directly or after timer)
   const actuallyTakePhoto = useCallback(async () => {
     try {
-      await takePhoto();
-      // Refresh last photo after a brief delay to allow save to complete
-      setTimeout(async () => {
-        const photo = await mediaService.getLastPhoto();
-        if (photo) {
-          setLastPhotoUri(photo.uri);
-        }
-      }, 500);
+      // The controller handles the WebRTC camera lock and the thumbnail.
+      await requestCapture({ notifyRemote: false });
     } catch (error) {
       // Suppress transient Android ImageCapture binding errors -
       // the photo still captures successfully via retry in useCamera
@@ -606,7 +628,7 @@ export default function CameraScreen() {
         console.error('Error taking photo:', error);
       }
     }
-  }, [takePhoto]);
+  }, [requestCapture]);
 
   // Handle timer countdown completion
   const handleTimerComplete = useCallback(() => {
@@ -624,31 +646,20 @@ export default function CameraScreen() {
     }
   };
 
-  // Volume button shutter - must handle WebRTC camera release like remote TAKE_PHOTO command
+  // Volume button shutter - the capture controller owns the WebRTC camera lock.
+  // The busy guard stays: the volume manager can emit duplicate events for a
+  // single press, and the queue would happily turn those into extra photos.
   const volumeShutterBusyRef = useRef(false);
   const handleVolumeShutter = useCallback(async () => {
     if (volumeShutterBusyRef.current) return;
     volumeShutterBusyRef.current = true;
     try {
       if (cameraState.captureMode === 'photo') {
-        const wasUsingWebRTC = streamModeRef.current === 'webrtc';
-        if (wasUsingWebRTC) {
-          pauseLocalStream();
-          setIsWebRTCUsingCamera(false);
-          await waitForCameraInit();
-        }
-
         if (settings.timer > 0) {
           setTimerSeconds(settings.timer);
           setShowTimerCountdown(true);
         } else {
           await actuallyTakePhoto();
-        }
-
-        if (wasUsingWebRTC) {
-          setIsWebRTCUsingCamera(true);
-          await new Promise(resolve => setTimeout(resolve, 200));
-          await resumeLocalStream(facingRef.current);
         }
       } else {
         if (cameraState.isRecording) {
@@ -660,7 +671,7 @@ export default function CameraScreen() {
     } finally {
       volumeShutterBusyRef.current = false;
     }
-  }, [cameraState.captureMode, cameraState.isRecording, settings.timer, actuallyTakePhoto, startRecording, stopRecording, pauseLocalStream, resumeLocalStream, waitForCameraInit]);
+  }, [cameraState.captureMode, cameraState.isRecording, settings.timer, actuallyTakePhoto, startRecording, stopRecording]);
 
   useVolumeShutter({ onShutterPress: handleVolumeShutter, enabled: !showQR });
 

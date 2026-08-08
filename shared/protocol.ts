@@ -61,6 +61,11 @@ export type Response =
       streamMode?: StreamMode;
     }
   | { type: 'ERROR'; message: string }
+  // The camera device is mid-capture, so the live preview is dead: WebRTC and
+  // vision-camera can't hold the camera at once. Sent true when the camera is
+  // taken and false once the stream is back, so the remote can show the
+  // captured shot instead of a frozen frame.
+  | { type: 'CAPTURE_STATE'; capturing: boolean }
   | FrameDataMessage
   | PhotoDataMessage;
 

@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Camera, PhotoFile, VideoFile } from 'react-native-vision-camera';
+import * as MediaLibrary from 'expo-media-library';
 import { CameraState, FlashMode, CaptureMode, CameraFacing } from '../types';
 import { mediaService } from '../services/MediaService';
 
@@ -67,8 +68,12 @@ export function useCamera(initialState?: Partial<CameraState>) {
   // Guard against concurrent takePhoto calls (e.g. double volume button events)
   const isCapturingRef = useRef(false);
 
-  // Take photo with retry for Android ImageCapture binding race
-  const takePhoto = useCallback(async (): Promise<PhotoFile | null> => {
+  // Take photo with retry for Android ImageCapture binding race.
+  // Resolves as soon as the capture completes; `onPhotoSaved` fires later,
+  // when the background gallery save finishes.
+  const takePhoto = useCallback(async (
+    onPhotoSaved?: (asset: MediaLibrary.Asset | null) => void
+  ): Promise<PhotoFile | null> => {
     if (!cameraRef.current) {
       console.error('Camera ref not set');
       return null;
@@ -84,7 +89,10 @@ export function useCamera(initialState?: Partial<CameraState>) {
         flash: state.flash === 'auto' ? 'on' : state.flash,
         enableShutterSound: false,
       });
-      await mediaService.savePhotoToGallery(photo);
+      // Saving to the gallery is slow (file copy + media store insert) and
+      // nothing on the capture path needs it to finish, so it runs in the
+      // background - the camera is free for the next shot immediately.
+      mediaService.savePhotoInBackground(photo, onPhotoSaved);
       return photo;
     };
 
@@ -94,7 +102,11 @@ export function useCamera(initialState?: Partial<CameraState>) {
       // Android's ImageCapture may not be fully bound yet after camera reactivation.
       // Retry once after a brief delay.
       const msg = error instanceof Error ? error.message : String(error);
-      if (msg.includes('Not bound to a valid Camera') || msg.includes('ImageCapture')) {
+      if (
+        msg.includes('Not bound to a valid Camera') ||
+        msg.includes('ImageCapture') ||
+        msg.includes('Failure to submit capture request')
+      ) {
         await new Promise(resolve => setTimeout(resolve, 500));
         return await capture();
       }

@@ -3,6 +3,31 @@ import { PhotoFile, VideoFile } from 'react-native-vision-camera';
 import { Linking, Platform } from 'react-native';
 
 class MediaService {
+  // Serialises background saves so a burst lands in the gallery in capture
+  // order instead of firing concurrent MediaStore writes
+  private saveQueue: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Save a photo to the gallery without blocking the caller.
+   *
+   * createAssetAsync copies the file and inserts it into the media store,
+   * which costs the better part of a second - long enough to stall the next
+   * capture if it's awaited on the capture path.
+   */
+  savePhotoInBackground(
+    photo: PhotoFile,
+    onSaved?: (asset: MediaLibrary.Asset | null) => void
+  ): void {
+    this.saveQueue = this.saveQueue
+      .then(() => this.savePhotoToGallery(photo))
+      .then((asset) => {
+        onSaved?.(asset);
+      })
+      .catch((error) => {
+        console.error('Background photo save failed:', error);
+      });
+  }
+
   // Save photo to gallery
   async savePhotoToGallery(photo: PhotoFile): Promise<MediaLibrary.Asset | null> {
     try {

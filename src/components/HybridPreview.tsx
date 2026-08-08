@@ -10,6 +10,10 @@ interface HybridPreviewProps {
   latestFrame: FrameDataMessage | null;
   facing?: 'front' | 'back';
   videoNeedsRotation?: boolean;
+  /** The camera device is mid-capture, so no live preview is coming. */
+  isCapturing?: boolean;
+  /** The shot being taken, shown in place of the dead preview. */
+  capturedPhotoUri?: string | null;
 }
 
 /**
@@ -27,6 +31,8 @@ export function HybridPreview({
   latestFrame,
   facing = 'back',
   videoNeedsRotation = false,
+  isCapturing = false,
+  capturedPhotoUri = null,
 }: HybridPreviewProps) {
   // Double buffering: two frame slots that alternate
   const [frameA, setFrameA] = useState<string | null>(null);
@@ -251,6 +257,35 @@ export function HybridPreview({
         </View>
       )}
 
+      {/* Capture review: the camera hands its lens to vision-camera to take
+          the photo, so the live preview is dead for a second or two. Show the
+          shot being taken rather than a frozen frame. */}
+      {isCapturing && (
+        capturedPhotoUri ? (
+          <View style={styles.captureOverlay}>
+            <Image
+              source={{ uri: capturedPhotoUri }}
+              style={StyleSheet.absoluteFill}
+              resizeMode="cover"
+              fadeDuration={0}
+            />
+            <View style={styles.captureBadge}>
+              <Text style={styles.captureBadgeText}>Captured</Text>
+            </View>
+          </View>
+        ) : (
+          // The shot isn't here yet. Left deliberately transparent: the last
+          // video frame underneath reads better than a black screen, so this
+          // only labels why it has stopped moving.
+          <View style={styles.captureBadge}>
+            <ActivityIndicator size="small" color="#fff" />
+            <Text style={[styles.captureBadgeText, styles.capturePendingText]}>
+              Capturing...
+            </Text>
+          </View>
+        )
+      )}
+
       {/* Connection and mode indicator */}
       {hasContent && (
         <View style={styles.connectionIndicator}>
@@ -308,6 +343,30 @@ const styles = StyleSheet.create({
     marginTop: 16,
     textAlign: 'center',
     paddingHorizontal: 40,
+  },
+  captureOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000',
+  },
+  capturePendingText: {
+    marginLeft: 8,
+  },
+  captureBadge: {
+    position: 'absolute',
+    bottom: 24,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+  },
+  captureBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.5,
   },
   connectionIndicator: {
     position: 'absolute',

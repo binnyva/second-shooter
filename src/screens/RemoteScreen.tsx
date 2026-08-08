@@ -16,6 +16,7 @@ import { useSignaling } from '../hooks/useSignaling';
 import { usePeerConnection } from '../hooks/usePeerConnection';
 import { useSettings } from '../hooks/useSettings';
 import { useVolumeShutter } from '../hooks/useVolumeShutter';
+import { useRemotePhotoHistory } from '../hooks/useRemotePhotoHistory';
 import { webRTCService } from '../services/WebRTCService';
 import {
   CameraState,
@@ -70,9 +71,17 @@ export default function RemoteScreen() {
   const [streamMode, setStreamMode] = useState<StreamMode>('webrtc');
   const [latestFrame, setLatestFrame] = useState<FrameDataMessage | null>(null);
 
-  // Last photo received from camera device
-  const [lastRemotePhotoUri, setLastRemotePhotoUri] = useState<string | null>(null);
+  // Photos received from camera device this session (oldest first)
+  const { photos: capturedPhotos, addPhoto, clear: clearPhotos } = useRemotePhotoHistory();
   const [showPhotoViewer, setShowPhotoViewer] = useState(false);
+
+  // The camera device's preview goes dark while it captures. These drive the
+  // review image shown in its place.
+  const [isCameraCapturing, setIsCameraCapturing] = useState(false);
+  const [reviewPhotoUri, setReviewPhotoUri] = useState<string | null>(null);
+  const lastRemotePhotoUri = capturedPhotos.length > 0
+    ? capturedPhotos[capturedPhotos.length - 1].uri
+    : null;
 
   // Signaling
   const {
@@ -109,8 +118,22 @@ export default function RemoteScreen() {
     // Handle photo data (don't log base64 content)
     if (response.type === 'PHOTO_DATA') {
       console.log(`[REMOTE] Received photo data: ${response.data?.length || 0} bytes`);
-      const photoUri = `data:image/jpeg;base64,${response.data}`;
-      setLastRemotePhotoUri(photoUri);
+      if (response.data) {
+        addPhoto(response.data, response.timestamp);
+        // Straight to a data URI rather than waiting on the history's file
+        // write - this is standing in for a dead preview, so it has to be
+        // on screen now. Cleared when the capture ends.
+        setReviewPhotoUri(`data:image/jpeg;base64,${response.data}`);
+      }
+      return;
+    }
+
+    if (response.type === 'CAPTURE_STATE') {
+      console.log(`[REMOTE] Camera capture state: ${response.capturing}`);
+      setIsCameraCapturing(response.capturing);
+      // Cleared either way: entering a capture must not show the previous
+      // shot, and leaving one has no use for the image any more.
+      setReviewPhotoUri(null);
       return;
     }
 
@@ -160,7 +183,7 @@ export default function RemoteScreen() {
         Alert.alert('Error', response.message);
         break;
     }
-  }, [handleFrameData, streamMode]);
+  }, [handleFrameData, streamMode, addPhoto]);
 
   // Handle remote stream from camera
   const handleRemoteStream = useCallback((stream: MediaStream) => {
@@ -218,6 +241,9 @@ export default function RemoteScreen() {
     }
     connectingSessionRef.current = scannedSessionId;
 
+    // A new pairing is a new shoot - don't carry the previous session's photos.
+    clearPhotos();
+
     console.log('Scanned session ID:', scannedSessionId);
 
     try {
@@ -260,6 +286,7 @@ export default function RemoteScreen() {
     }
   }, [
     addPeerIceCandidate,
+    clearPhotos,
     createAnswer,
     createConnection,
     initialSessionId,
@@ -348,10 +375,10 @@ export default function RemoteScreen() {
 
   // Handle opening photo viewer
   const handleOpenPhotoViewer = useCallback(() => {
-    if (lastRemotePhotoUri) {
+    if (capturedPhotos.length > 0) {
       setShowPhotoViewer(true);
     }
-  }, [lastRemotePhotoUri]);
+  }, [capturedPhotos.length]);
 
   // Volume button shutter
   const handleVolumeShutter = useCallback(() => {
@@ -375,12 +402,32 @@ export default function RemoteScreen() {
     }
   }, [isDataChannelReady, showScanner, sendCommand]);
 
-  // Cleanup on unmount
+  // The camera device always pairs capturing:true with a later false, but a
+  // crash or a dropped connection mid-capture would strand the review image.
+  useEffect(() => {
+    if (!isCameraCapturing) return;
+    const timeout = setTimeout(() => {
+      console.warn('[REMOTE] No capture-finished signal - clearing review image');
+      setIsCameraCapturing(false);
+      setReviewPhotoUri(null);
+    }, 15000);
+    return () => clearTimeout(timeout);
+  }, [isCameraCapturing]);
+
+  useEffect(() => {
+    if (connectionState !== 'connected') {
+      setIsCameraCapturing(false);
+      setReviewPhotoUri(null);
+    }
+  }, [connectionState]);
+
+  // Cleanup on unmount - a new pairing starts with an empty photo history
   useEffect(() => {
     return () => {
       clearActiveConnection();
+      clearPhotos();
     };
-  }, [clearActiveConnection]);
+  }, [clearActiveConnection, clearPhotos]);
 
   return (
     <View style={styles.container}>
@@ -398,6 +445,8 @@ export default function RemoteScreen() {
             latestFrame={latestFrame}
             facing={remoteState.facing}
             videoNeedsRotation={videoNeedsRotation}
+            isCapturing={isCameraCapturing}
+            capturedPhotoUri={reviewPhotoUri}
           />
 
           <CameraControls
@@ -423,7 +472,7 @@ export default function RemoteScreen() {
 
           <PhotoViewer
             visible={showPhotoViewer}
-            photoUri={lastRemotePhotoUri}
+            photos={capturedPhotos}
             onClose={() => setShowPhotoViewer(false)}
           />
 

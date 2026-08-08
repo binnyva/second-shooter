@@ -218,6 +218,7 @@ class WebRTCService {
       'RECORDING_STOPPED',
       'STATE_UPDATE',
       'ERROR',
+      'CAPTURE_STATE',
       'FRAME_DATA',
       'PHOTO_DATA',
     ].includes(m.type || '');
