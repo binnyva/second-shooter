@@ -73,6 +73,20 @@ The remote preview uses one of two stream modes (see `src/utils/streamMode.ts` a
 
 WebRTC and vision-camera compete for the camera; the WebRTC lock is temporarily released when taking remote photos, and a "preview paused" overlay is shown when WebRTC holds the camera.
 
+**The handoff between them is a race.** Neither releases the camera synchronously and neither reports when it's done, so each switch just waits `CAMERA_HANDOFF_MS` (`app/index.tsx`). Measured on a Pixel with `adb logcat -s Camera2CameraImpl:D org.webrtc.Logging:I`, the old 200ms lost in *both* directions: CameraX logged `onClosed()` 58ms after WebRTC had begun opening, and WebRTC's device closed 106ms after CameraX started force-opening. It only appeared to work because CameraX force-opens and retries. When the HAL declines the resulting stream combination you get `CameraState.ERROR_STREAM_CONFIG`, surfaced as `session/invalid-output-configuration`.
+
+So the timeout is a mitigation, not a fix — the `<Camera>`'s `onError` is what makes it safe, remounting on the contention codes (`session/invalid-output-configuration`, `session/camera-not-ready`, `session/hardware-cost-too-high`, `device/camera-already-in-use`) up to `CAMERA_MAX_RETRIES`. Keep an `onError` on any `<Camera>` that shares the device with WebRTC: without one the failure escapes as an unhandled error and the preview stays dead with no way back.
+
+### Reconnection
+
+Turning a device's screen off backgrounds the app, and neither half of a pairing survives that on its own: Android ends every `getUserMedia` track and tears down vision-camera's session, and once ICE consent checks go unanswered both peer connections drop. Recovery (`src/hooks/useAppState.ts` plus the reconnect effects in `app/index.tsx`):
+
+- **The camera device owns recovery**, because it is the offerer. It retries from `connectionState`, not from its own resume, so it also covers the case where only the remote's screen was off.
+- **Renegotiation is an ICE restart** (`createOffer({ iceRestart: true })`), not a new connection. SCTP survives an ICE restart, so the data channel and the negotiated media sections carry over and neither side has to re-pair. Retries are paced by `RECONNECT_GRACE_MS` / `RECONNECT_RETRY_MS` / `RECONNECT_MAX_ATTEMPTS`.
+- **A dropped connection falls back to `frame-based`** and stops the WebRTC track. Frame-based needs no lens, so the local preview works again and the reconnect has one less thing to get right; the stream-mode effect promotes it back to `webrtc` once connected.
+- **Because the data channel is reused, `onDataChannelOpen` fires only once per pairing.** The remote therefore re-issues `GET_STATE` on every transition to connected — without it, a remote that dropped in `webrtc` mode comes back rendering an `RTCView` for a track the camera has since abandoned.
+- **A resume can also find a dead track under a still-`connected` connection** (a short screen-off doesn't outlast ICE consent). The camera checks `hasLiveVideoTrack()` on every resume, independently of connection state.
+
 ### Key Services
 - `src/services/WebRTCService.ts` - P2P connection management
 - `src/services/CameraService.ts` - Camera operations wrapper using react-native-vision-camera
@@ -86,6 +100,7 @@ WebRTC and vision-camera compete for the camera; the WebRTC lock is temporarily 
 - `src/hooks/useSignaling.ts` - Firebase signaling hook
 - `src/hooks/useSettings.ts` - App settings hook
 - `src/hooks/useVolumeShutter.ts` - Volume buttons as shutter trigger (react-native-volume-manager)
+- `src/hooks/useAppState.ts` - Foreground/background tracking; drives reconnection after a screen-off
 
 ### Key Utilities
 - `src/utils/lensDetection.ts` - Detects physical lenses (ultra-wide/wide/telephoto) for zoom buttons

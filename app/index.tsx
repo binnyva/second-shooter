@@ -10,6 +10,7 @@ import { useRouter } from 'expo-router';
 import { useIsFocused } from '@react-navigation/native';
 import {
   Camera,
+  CameraRuntimeError,
   PhotoFile,
   useCameraDevice,
   useCameraPermission,
@@ -29,12 +30,35 @@ import { usePeerConnection } from '../src/hooks/usePeerConnection';
 import { useSettings } from '../src/hooks/useSettings';
 import { useVolumeShutter } from '../src/hooks/useVolumeShutter';
 import { useCaptureController } from '../src/hooks/useCaptureController';
+import { useAppState } from '../src/hooks/useAppState';
 import { requestMediaLibraryPermission } from '../src/utils/permissions';
 import { detectLenses } from '../src/utils/lensDetection';
 import { determineStreamMode } from '../src/utils/streamMode';
 import { mediaService } from '../src/services/MediaService';
 import { webRTCService } from '../src/services/WebRTCService';
 import { Command, CameraState, LensInfo, StreamMode } from '../src/types';
+
+// Reconnection pacing. A brief ICE drop (a network hiccup, a Wi-Fi/cellular
+// handover) recovers on its own, so wait out the grace period before spending a
+// renegotiation on it. The attempt cap stops a phone that was left paired to a
+// camera that never comes back from retrying all day.
+const RECONNECT_GRACE_MS = 3000;
+const RECONNECT_RETRY_MS = 5000;
+const RECONNECT_MAX_ATTEMPTS = 12;
+
+// Neither vision-camera nor WebRTC releases the camera synchronously, and
+// neither reports when it's done, so every handoff between them waits this out.
+// Measured on a Pixel: CameraX signalled onClosed() 58ms after WebRTC had
+// already begun opening, and WebRTC's device closed 106ms after CameraX started
+// force-opening - i.e. the old 200ms lost the race in both directions and only
+// got away with it because CameraX force-opens and retries. When it doesn't,
+// the HAL rejects the stream combination and the session fails to configure.
+const CAMERA_HANDOFF_MS = 500;
+
+// A failed handoff is transient by nature - the camera is simply still held.
+// Remounting reconfigures against a (by then) free device.
+const CAMERA_RETRY_MS = 700;
+const CAMERA_MAX_RETRIES = 3;
 
 export default function CameraScreen() {
   const router = useRouter();
@@ -98,6 +122,9 @@ export default function CameraScreen() {
 
   // Track if remote connection is active (used for showing connection indicator)
   const [isStreamingToRemote, setIsStreamingToRemote] = useState(false);
+  // Sticky: set once a pairing has actually come up, cleared only when the
+  // session is torn down. Gates reconnection - see the reconnect effect.
+  const [hasPaired, setHasPaired] = useState(false);
   // Key to force Camera remount when screen regains focus (fixes vision-camera not restarting)
   const [cameraKey, setCameraKey] = useState(0);
   // Zoom override - used to mount camera at 1x then update to target zoom after init
@@ -276,7 +303,7 @@ export default function CameraScreen() {
       try {
         if (!wasHeld) return;
         setIsWebRTCUsingCamera(true);
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(resolve => setTimeout(resolve, CAMERA_HANDOFF_MS));
         await resumeLocalStream(facingRef.current);
       } finally {
         // Always clears, even if the resume failed - otherwise the remote
@@ -348,6 +375,46 @@ export default function CameraScreen() {
 
   const cameraIsActive = isFocused && !cameraState.isRecording && !isWebRTCUsingCamera;
 
+  // Recover from a lost camera handoff
+  //
+  // The camera is passed back and forth between vision-camera and WebRTC, and
+  // neither releases the device synchronously. CameraX force-opens while the
+  // other client is still closing, and when the HAL won't accept the resulting
+  // stream combination the session fails to configure. Without an onError the
+  // failure escapes as an unhandled error and the preview just stays dead, so
+  // treat the contention codes as transient and reconfigure against a camera
+  // that has had time to come free.
+  const cameraRetriesRef = useRef(0);
+  const handleCameraError = useCallback((error: CameraRuntimeError) => {
+    const isContention =
+      error.code === 'session/invalid-output-configuration' ||
+      error.code === 'session/camera-not-ready' ||
+      error.code === 'session/hardware-cost-too-high' ||
+      error.code === 'device/camera-already-in-use';
+
+    if (!isContention || cameraRetriesRef.current >= CAMERA_MAX_RETRIES) {
+      console.error('[CAMERA] Camera error:', error.code, error.message);
+      return;
+    }
+
+    cameraRetriesRef.current += 1;
+    console.warn(
+      `[CAMERA] ${error.code} - remounting (retry ${cameraRetriesRef.current}/${CAMERA_MAX_RETRIES})`
+    );
+    setTimeout(() => {
+      setIsCameraInitialized(false);
+      setCameraKey(prev => prev + 1);
+    }, CAMERA_RETRY_MS);
+  }, []);
+
+  // A session that configures is proof the camera came free; let the next
+  // handoff have the full retry budget again.
+  useEffect(() => {
+    if (isCameraInitialized) {
+      cameraRetriesRef.current = 0;
+    }
+  }, [isCameraInitialized]);
+
   // Request permissions on mount
   useEffect(() => {
     const requestPermissions = async () => {
@@ -386,6 +453,7 @@ export default function CameraScreen() {
     setIsQRLoading(true);
     try {
       setIsStreamingToRemote(true);
+      setHasPaired(false);
 
       // Create signaling session and WebRTC connection
       await createSession();
@@ -397,7 +465,7 @@ export default function CameraScreen() {
       // Add video track BEFORE creating offer so it's included in SDP negotiation
       if (initialStreamMode === 'webrtc') {
         setIsWebRTCUsingCamera(true);
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(resolve => setTimeout(resolve, CAMERA_HANDOFF_MS));
       }
 
       await startLocalStream();
@@ -439,6 +507,7 @@ export default function CameraScreen() {
     cleanupSignaling();
     closeConnection();
     setIsStreamingToRemote(false);
+    setHasPaired(false);
     setIsWebRTCUsingCamera(false);
     setCurrentStreamMode('frame-based');
   };
@@ -447,12 +516,130 @@ export default function CameraScreen() {
   useEffect(() => {
     if (connectionState === 'connected') {
       setIsRemoteConnected(true);
+      setHasPaired(true);
     } else if (connectionState === 'failed' || connectionState === 'disconnected') {
       setIsRemoteConnected(false);
+      // Hand the camera back to vision-camera and fall back to frame-based:
+      // it's the mode that doesn't need the lens, so the local preview works
+      // again and the reconnect has one less thing to get right. Releasing
+      // WebRTC's hold has to include stopping its track - otherwise both hold
+      // the camera at once and the resume is a coin flip.
+      if (isStreamingRef.current && streamModeRef.current === 'webrtc') {
+        pauseLocalStream();
+      }
       setIsWebRTCUsingCamera(false);
       setCurrentStreamMode('frame-based');
     }
-  }, [connectionState]);
+  }, [connectionState, pauseLocalStream]);
+
+  // Reconnecting after the app has been backgrounded
+  //
+  // Turning the screen off backgrounds the app, and Android hands the camera to
+  // no one: every capture track ends and vision-camera's session is torn down.
+  // ICE consent checks then go unanswered, so within ~30s both peer connections
+  // drop. Neither of those comes back by itself - before this, the pairing was
+  // dead until the app was force-quit and relaunched.
+  //
+  // The camera device owns recovery because it is the offerer, and it drives it
+  // off connectionState rather than off its own resume, so it also covers the
+  // case where only the remote's screen was off.
+  const isForeground = useAppState(useCallback(() => {
+    // vision-camera doesn't reliably restart its session after a background -
+    // the same remount the navigation-focus path needs applies here.
+    //
+    // Guarded, because a remount tears down and rebuilds the CameraX session,
+    // and configuring one over a session that is still going down is what
+    // ERROR_STREAM_CONFIG (session/invalid-output-configuration) is. Skip it
+    // mid-capture, and skip it when WebRTC holds the lens - vision-camera is
+    // deactivated then, so there is no session to restart anyway.
+    if (isCapturingRef.current) return;
+    if (isStreamingRef.current && streamModeRef.current === 'webrtc') return;
+
+    setIsCameraInitialized(false);
+    setCameraKey(prev => prev + 1);
+  }, [isCapturingRef]));
+
+  // A short screen-off doesn't outlast ICE consent, so the connection can come
+  // back reporting 'connected' over a track Android already ended - the remote
+  // shows black under a "Live" badge, and the reconnect loop below never runs
+  // because nothing looks wrong. Check the track itself on every resume.
+  useEffect(() => {
+    if (!isForeground) return;
+    if (!isStreamingRef.current) return;
+    if (streamModeRef.current !== 'webrtc') return;
+
+    let cancelled = false;
+    // The camera isn't handed back the instant the app is foregrounded;
+    // grabbing at it immediately just fails.
+    const timer = setTimeout(async () => {
+      if (cancelled || webRTCService.hasLiveVideoTrack()) return;
+      try {
+        console.log('[CAMERA] Capture track ended while backgrounded - restoring');
+        await resumeLocalStream(facingRef.current);
+      } catch (error) {
+        console.error('[CAMERA] Failed to restore capture track on resume:', error);
+      }
+    }, 500);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isForeground, resumeLocalStream]);
+
+  useEffect(() => {
+    if (!isStreamingToRemote) return;
+    if (!hasPaired) return;                 // setup owns the connection until it exists
+    if (!isForeground) return;              // no camera to stream, nothing to renegotiate onto
+    if (connectionState === 'connected') return;
+
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const attempt = async () => {
+      if (cancelled) return;
+      // close() can land between a reconnect being scheduled and it firing -
+      // the screen tearing down, or the user starting a new pairing.
+      if (!webRTCService.hasPeerConnection()) {
+        console.warn('[CAMERA] Reconnect skipped: connection is gone');
+        return;
+      }
+      attempts += 1;
+
+      try {
+        // An ended track stays attached to its sender, so ICE could come back
+        // with the remote still looking at nothing. Replace it first.
+        if (streamModeRef.current === 'webrtc' && !webRTCService.hasLiveVideoTrack()) {
+          await resumeLocalStream(facingRef.current);
+        }
+
+        const offer = await createOffer({ iceRestart: true });
+        await sendOffer({ type: 'offer', sdp: offer.sdp! });
+        console.log(`[CAMERA] Sent ICE-restart offer (attempt ${attempts})`);
+      } catch (error) {
+        console.error(`[CAMERA] Reconnect attempt ${attempts} failed:`, error);
+      }
+
+      if (cancelled || attempts >= RECONNECT_MAX_ATTEMPTS) return;
+      timer = setTimeout(attempt, RECONNECT_RETRY_MS);
+    };
+
+    timer = setTimeout(attempt, RECONNECT_GRACE_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    connectionState,
+    isStreamingToRemote,
+    hasPaired,
+    isForeground,
+    createOffer,
+    sendOffer,
+    resumeLocalStream,
+  ]);
 
   // Keep streaming ref in sync with state (for use in callbacks)
   useEffect(() => {
@@ -478,7 +665,7 @@ export default function CameraScreen() {
       }
       // Deactivate vision-camera, then start WebRTC stream
       setIsWebRTCUsingCamera(true);
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, CAMERA_HANDOFF_MS));
       try {
         await resumeLocalStream(cameraState.facing);
       } catch (error) {
@@ -487,7 +674,7 @@ export default function CameraScreen() {
     } else {
       // Pause WebRTC stream to release the camera
       pauseLocalStream();
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise(resolve => setTimeout(resolve, CAMERA_HANDOFF_MS));
       // Set zoom override to mount camera at 1x - actual zoom applied after init
       // (works around vision-camera not respecting zoom prop at mount time)
       setZoomOverride(1);
@@ -500,8 +687,15 @@ export default function CameraScreen() {
   }, [resumeLocalStream, pauseLocalStream, sendStateUpdate, cameraState, availableLenses, zoomOverride]);
 
   // Debounced stream mode detection based on camera facing and zoom
+  //
+  // Also the path back to WebRTC after a reconnect: a drop forces frame-based,
+  // and currentStreamMode is a dependency so this re-evaluates once the
+  // connection is back and promotes the mode again if the zoom warrants it.
   useEffect(() => {
     if (!isDataChannelReady) return;
+    // The data channel reads as open across a drop, so this is the real check.
+    // Switching modes mid-outage would only fight the reconnect for the camera.
+    if (connectionState !== 'connected') return;
 
     const targetMode = determineStreamMode(cameraState.facing, cameraState.zoom);
     if (targetMode === streamModeRef.current) return;
@@ -515,7 +709,14 @@ export default function CameraScreen() {
     }, 300);
 
     return () => clearTimeout(debounceTimer);
-  }, [cameraState.facing, cameraState.zoom, isDataChannelReady, handleStreamModeSwitch]);
+  }, [
+    cameraState.facing,
+    cameraState.zoom,
+    isDataChannelReady,
+    connectionState,
+    currentStreamMode,
+    handleStreamModeSwitch,
+  ]);
 
   // Send state updates when camera state changes and data channel is ready
   useEffect(() => {
@@ -720,6 +921,7 @@ export default function CameraScreen() {
           zoom={zoomOverride ?? cameraState.zoom}
           enableZoomGesture={true}
           onInitialized={handleCameraInitialized}
+          onError={handleCameraError}
         />
 
         {/* Grid overlay */}

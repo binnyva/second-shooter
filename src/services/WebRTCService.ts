@@ -232,7 +232,14 @@ class WebRTCService {
   }
 
   // Create and return SDP offer
-  async createOffer(): Promise<RTCSessionDescriptionInit> {
+  //
+  // iceRestart re-gathers candidates with a fresh ufrag/pwd on the existing
+  // connection. That's the recovery path after the app is backgrounded: it
+  // keeps the data channel (SCTP survives an ICE restart) and the negotiated
+  // media sections, so neither side has to re-pair.
+  async createOffer(
+    options: { iceRestart?: boolean } = {}
+  ): Promise<RTCSessionDescriptionInit> {
     if (!this.peerConnection) {
       throw new Error('Peer connection not initialized');
     }
@@ -240,6 +247,7 @@ class WebRTCService {
     const offer = await this.peerConnection.createOffer({
       offerToReceiveAudio: false,
       offerToReceiveVideo: true,
+      iceRestart: options.iceRestart ?? false,
     } as any);
 
     await this.peerConnection.setLocalDescription(offer as any);
@@ -682,6 +690,22 @@ class WebRTCService {
   // Check if data channel is ready
   isDataChannelReady(): boolean {
     return this.dataChannel?.readyState === 'open';
+  }
+
+  // Whether there is a connection to renegotiate onto at all. close() can land
+  // between a reconnect being scheduled and it firing.
+  hasPeerConnection(): boolean {
+    return this.peerConnection !== null;
+  }
+
+  // Whether the capture track we're sending is still producing media.
+  //
+  // Android ends the track when the app is backgrounded, and an ended track
+  // stays attached to its sender - ICE can come back with the remote still
+  // seeing nothing. Callers replace the track before renegotiating.
+  hasLiveVideoTrack(): boolean {
+    const track = this.localStream?.getVideoTracks()[0];
+    return track?.readyState === 'live';
   }
 
   // Generation of the current peer connection, for close() ownership checks

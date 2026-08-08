@@ -20,7 +20,7 @@ interface UsePeerConnectionReturn {
   localStream: MediaStream | null;
   isDataChannelReady: boolean;
   createConnection: () => Promise<void>;
-  createOffer: () => Promise<RTCSessionDescriptionInit>;
+  createOffer: (options?: { iceRestart?: boolean }) => Promise<RTCSessionDescriptionInit>;
   createAnswer: () => Promise<RTCSessionDescriptionInit>;
   setRemoteDescription: (description: RTCSessionDescriptionInit) => Promise<void>;
   addIceCandidate: (candidate: IceCandidate) => Promise<void>;
@@ -133,8 +133,10 @@ export function usePeerConnection({
   }, [role, onCommand, onResponse, onRemoteStream, onIceCandidate, onDataChannelOpen]);
 
   // Create SDP offer (camera device)
-  const createOffer = useCallback(async (): Promise<RTCSessionDescriptionInit> => {
-    return webRTCService.createOffer();
+  const createOffer = useCallback(async (
+    options: { iceRestart?: boolean } = {}
+  ): Promise<RTCSessionDescriptionInit> => {
+    return webRTCService.createOffer(options);
   }, []);
 
   // Create SDP answer (remote device)

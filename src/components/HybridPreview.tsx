@@ -3,6 +3,11 @@ import { View, StyleSheet, Text, ActivityIndicator, Image, Platform } from 'reac
 import { RTCView, MediaStream } from 'react-native-webrtc';
 import { ConnectionState, StreamMode, FrameDataMessage } from '../types';
 
+// How long a drop can sit behind the small "Reconnecting..." chip before the
+// preview says plainly what is going on. Comfortably longer than the camera
+// device's reconnect grace period, so a routine ICE restart never shows this.
+const STALLED_RECONNECT_MS = 8000;
+
 interface HybridPreviewProps {
   stream: MediaStream | null;
   connectionState: ConnectionState;
@@ -77,6 +82,21 @@ export function HybridPreview({
   const handleFrameError = (slot: 'A' | 'B', error: any) => {
     console.log(`[HybridPreview] Image ${slot} LOAD ERROR:`, error?.nativeEvent?.error || error);
   };
+
+  // A drop leaves the last frame (or a stalled RTCView) on screen under a small
+  // "Reconnecting..." chip. That reads fine for the second or two an ICE restart
+  // takes, but past that the user is staring at a frozen or black image with no
+  // idea why - and the usual cause, a camera phone that is still asleep, is
+  // something only they can fix.
+  const [reconnectStalled, setReconnectStalled] = useState(false);
+  useEffect(() => {
+    if (connectionState === 'connected') {
+      setReconnectStalled(false);
+      return;
+    }
+    const timer = setTimeout(() => setReconnectStalled(true), STALLED_RECONNECT_MS);
+    return () => clearTimeout(timer);
+  }, [connectionState]);
 
   // Clear frames when switching back to WebRTC mode
   useEffect(() => {
@@ -286,6 +306,18 @@ export function HybridPreview({
         )
       )}
 
+      {/* A reconnect that isn't resolving. The image underneath is stale, so
+          cover it rather than let it pass for a live preview. */}
+      {hasContent && reconnectStalled && (
+        <View style={styles.reconnectOverlay}>
+          <ActivityIndicator size="large" color="#fff" style={styles.loader} />
+          <Text style={styles.statusText}>Reconnecting to camera...</Text>
+          <Text style={styles.hintText}>
+            Wake the camera phone and open Second Shooter on it
+          </Text>
+        </View>
+      )}
+
       {/* Connection and mode indicator */}
       {hasContent && (
         <View style={styles.connectionIndicator}>
@@ -347,6 +379,12 @@ const styles = StyleSheet.create({
   captureOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: '#000',
+  },
+  reconnectOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
   },
   capturePendingText: {
     marginLeft: 8,

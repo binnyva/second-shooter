@@ -394,13 +394,20 @@ export default function RemoteScreen() {
 
   useVolumeShutter({ onShutterPress: handleVolumeShutter, enabled: !showScanner });
 
-  // Request initial state when data channel becomes ready
+  // Ask the camera for its state on every (re)connect.
+  //
+  // Not just on data channel open: recovery from a backgrounded app is an ICE
+  // restart, which reuses the existing channel, so open fires exactly once for
+  // the life of the pairing. Without re-asking, a remote that dropped while in
+  // WebRTC mode comes back rendering an RTCView for a track the camera has
+  // since abandoned - a black screen that never resolves.
   useEffect(() => {
-    if (isDataChannelReady && !showScanner) {
-      console.log('Data channel ready, requesting initial state');
-      sendCommand({ type: 'GET_STATE' });
-    }
-  }, [isDataChannelReady, showScanner, sendCommand]);
+    if (!isDataChannelReady || showScanner) return;
+    if (connectionState !== 'connected') return;
+
+    console.log('Connected with data channel ready, requesting camera state');
+    sendCommand({ type: 'GET_STATE' });
+  }, [isDataChannelReady, showScanner, connectionState, sendCommand]);
 
   // The camera device always pairs capturing:true with a later false, but a
   // crash or a dropped connection mid-capture would strand the review image.

@@ -7,6 +7,7 @@ jest.mock('../../config/webrtc', () => ({
   COMMAND_CHANNEL_NAME: 'camera-commands',
 }));
 
+import { mediaDevices } from 'react-native-webrtc';
 import { webRTCService } from '../../services/WebRTCService';
 
 const candidate = (id: string): IceCandidate => ({
@@ -78,6 +79,80 @@ describe('WebRTCService', () => {
       await webRTCService.setRemoteDescription(OFFER);
 
       expect(pc.addIceCandidate).not.toHaveBeenCalled();
+    });
+  });
+
+  // Recovering a pairing after the app was backgrounded (screen off) is an ICE
+  // restart on the existing connection, plus a fresh capture track - Android
+  // ends the old one while the app is away.
+  describe('reconnection', () => {
+    const streamWith = (readyState: 'live' | 'ended') => ({
+      getTracks: () => [{ kind: 'video', readyState, stop: jest.fn() }],
+      getVideoTracks: () => [{ kind: 'video', readyState, stop: jest.fn() }],
+    });
+
+    afterEach(() => {
+      (mediaDevices.getUserMedia as jest.Mock).mockResolvedValue({
+        getTracks: () => [],
+        getVideoTracks: () => [],
+      });
+    });
+
+    it('does not restart ICE on an ordinary offer', async () => {
+      const pc: any = await webRTCService.createPeerConnection();
+
+      await webRTCService.createOffer();
+
+      expect(pc.createOffer).toHaveBeenCalledWith(
+        expect.objectContaining({ iceRestart: false })
+      );
+    });
+
+    it('restarts ICE when asked, without rebuilding the connection', async () => {
+      const pc: any = await webRTCService.createPeerConnection();
+      const generation = webRTCService.getGeneration();
+
+      await webRTCService.createOffer({ iceRestart: true });
+
+      expect(pc.createOffer).toHaveBeenCalledWith(
+        expect.objectContaining({ iceRestart: true })
+      );
+      // The data channel only survives if the connection itself does.
+      expect(webRTCService.getGeneration()).toBe(generation);
+      expect(pc.close).not.toHaveBeenCalled();
+    });
+
+    it('reports no live video track before a stream is acquired', () => {
+      expect(webRTCService.hasLiveVideoTrack()).toBe(false);
+    });
+
+    // The reconnect loop schedules an attempt on a timer, so setup teardown can
+    // land in between. Without this check it renegotiated onto nothing and threw
+    // "Peer connection not initialized".
+    it('reports no peer connection before setup and after close', async () => {
+      expect(webRTCService.hasPeerConnection()).toBe(false);
+
+      await webRTCService.createPeerConnection();
+      expect(webRTCService.hasPeerConnection()).toBe(true);
+
+      webRTCService.close();
+      expect(webRTCService.hasPeerConnection()).toBe(false);
+    });
+
+    it('reports a live video track while streaming', async () => {
+      (mediaDevices.getUserMedia as jest.Mock).mockResolvedValue(streamWith('live'));
+
+      await webRTCService.getLocalStream('back');
+
+      expect(webRTCService.hasLiveVideoTrack()).toBe(true);
+    });
+
+    it('reports the track Android ended while backgrounded as not live', async () => {
+      (mediaDevices.getUserMedia as jest.Mock).mockResolvedValue(streamWith('ended'));
+
+      await webRTCService.getLocalStream('back');
+
+      expect(webRTCService.hasLiveVideoTrack()).toBe(false);
     });
   });
 
