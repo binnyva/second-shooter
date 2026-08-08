@@ -10,7 +10,7 @@
     "deploy": "rsync -avze ssh '/Users/binnyva/Data/Code/Mobile/SecondShooter/web-remote/dist/' binnyva.com@binnyva.com:'/home/binnyva.com/domains/apps.binnyva.com/public_html/second-shooter/'"
   },
   "dependencies": {
-    "firebase": "^12.8.0",
+    "firebase": "^12.17.1",
     "react": "19.1.0",
     "react-dom": "19.1.0"
   },
@@ -19,6 +19,6 @@
     "@types/react-dom": "~19.1.0",
     "@vitejs/plugin-react": "^5.0.2",
     "typescript": "~5.9.2",
-    "vite": "^7.1.10"
+    "vite": "^7.3.6"
   }
 }

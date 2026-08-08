@@ -88,6 +88,7 @@ export default function RemoteScreen() {
   // Handle frame data from camera device (for frame-based streaming)
   const framesReceivedRef = useRef(0);
   const autoJoinAttemptedRef = useRef<string | null>(null);
+  const connectingSessionRef = useRef<string | null>(null);
   const handleFrameData = useCallback((frameData: FrameDataMessage) => {
     framesReceivedRef.current++;
     // Log every 30 frames (~3 seconds)
@@ -205,16 +206,25 @@ export default function RemoteScreen() {
   const clearActiveConnection = useCallback(() => {
     cleanupSignaling();
     closeConnection();
+    connectingSessionRef.current = null;
     setIsDataChannelReady(false);
   }, [cleanupSignaling, closeConnection]);
 
   const connectToSession = useCallback(async (scannedSessionId: string) => {
+    // Not re-entrant: each run registers another pair of Firestore listeners,
+    // which would duplicate every offer and candidate delivery.
+    if (connectingSessionRef.current) {
+      return;
+    }
+    connectingSessionRef.current = scannedSessionId;
+
     console.log('Scanned session ID:', scannedSessionId);
 
     try {
       const joined = await joinSession(scannedSessionId);
       if (!joined) {
         Alert.alert('Error', 'Session not found. Please scan the QR code again.');
+        connectingSessionRef.current = null;
         setShowScanner(true);
         if (initialSessionId) {
           router.replace('/remote');
@@ -242,6 +252,7 @@ export default function RemoteScreen() {
     } catch (error) {
       console.error('Error connecting to camera:', error);
       Alert.alert('Error', 'Failed to connect to camera. Please try again.');
+      connectingSessionRef.current = null;
       setShowScanner(true);
       if (initialSessionId) {
         router.replace('/remote');
