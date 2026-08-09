@@ -460,7 +460,11 @@ export default function CameraScreen() {
       await createConnection();
 
       // Determine initial stream mode based on current camera state
-      const initialStreamMode = determineStreamMode(cameraState.facing, cameraState.zoom);
+      const initialStreamMode = determineStreamMode(
+        cameraState.facing,
+        cameraState.zoom,
+        settings.previewMode
+      );
 
       // Add video track BEFORE creating offer so it's included in SDP negotiation
       if (initialStreamMode === 'webrtc') {
@@ -468,6 +472,13 @@ export default function CameraScreen() {
         await new Promise(resolve => setTimeout(resolve, CAMERA_HANDOFF_MS));
       }
 
+      // Started even for frame-based, which costs one camera open/close here:
+      // getUserMedia is the only way to get a video track, and the track has to
+      // be in the SDP before the offer for a later switch to webrtc to be a
+      // plain resume rather than a renegotiation. That matters most under
+      // previewMode 'frames', where the track then sits paused all session -
+      // it's what makes flipping the setting back to 'auto' mid-shoot instant.
+      // One handoff per pairing, not per photo.
       await startLocalStream();
       setCurrentStreamMode(initialStreamMode);
 
@@ -686,23 +697,37 @@ export default function CameraScreen() {
     sendStateUpdate(cameraState, availableLenses, false, false, newMode);
   }, [resumeLocalStream, pauseLocalStream, sendStateUpdate, cameraState, availableLenses, zoomOverride]);
 
-  // Debounced stream mode detection based on camera facing and zoom
+  // Debounced stream mode detection based on the preview mode setting, camera
+  // facing and zoom
   //
   // Also the path back to WebRTC after a reconnect: a drop forces frame-based,
   // and currentStreamMode is a dependency so this re-evaluates once the
   // connection is back and promotes the mode again if the zoom warrants it.
+  //
+  // settings.previewMode is a dependency for the same reason, and that is what
+  // makes the setting take effect mid-session: flipping it to 'frames' while
+  // paired lands here and switches, rather than waiting for a re-pair. Costs
+  // the one handoff you are turning the setting on to stop paying.
   useEffect(() => {
     if (!isDataChannelReady) return;
     // The data channel reads as open across a drop, so this is the real check.
     // Switching modes mid-outage would only fight the reconnect for the camera.
     if (connectionState !== 'connected') return;
 
-    const targetMode = determineStreamMode(cameraState.facing, cameraState.zoom);
+    const targetMode = determineStreamMode(
+      cameraState.facing,
+      cameraState.zoom,
+      settings.previewMode
+    );
     if (targetMode === streamModeRef.current) return;
 
     // Debounce to avoid rapid switching during pinch-to-zoom
     const debounceTimer = setTimeout(() => {
-      const currentTargetMode = determineStreamMode(cameraState.facing, cameraState.zoom);
+      const currentTargetMode = determineStreamMode(
+        cameraState.facing,
+        cameraState.zoom,
+        settings.previewMode
+      );
       if (currentTargetMode !== streamModeRef.current) {
         handleStreamModeSwitch(currentTargetMode);
       }
@@ -712,6 +737,7 @@ export default function CameraScreen() {
   }, [
     cameraState.facing,
     cameraState.zoom,
+    settings.previewMode,
     isDataChannelReady,
     connectionState,
     currentStreamMode,

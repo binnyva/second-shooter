@@ -73,6 +73,14 @@ The remote preview uses one of two stream modes (see `src/utils/streamMode.ts` a
 
 WebRTC and vision-camera compete for the camera; the WebRTC lock is temporarily released when taking remote photos, and a "preview paused" overlay is shown when WebRTC holds the camera.
 
+**The `previewMode` setting gates all of this, and defaults to `'frames'`.** Every switch between the two modes is a physical close/open of the camera module — the AF actuator resets and OIS drops and re-centres, which is audible and felt through the camera bump, and a photo taken in `webrtc` mode costs two of them. `previewMode: 'frames'` pins the preview to frame-based so the lens is never handed over: vision-camera holds it for the whole session, at the cost of a lower-quality, more bandwidth-hungry preview. `'auto'` is the zoom-dependent behaviour described above.
+
+There is deliberately no "always WebRTC" — the back camera above 1x can't be streamed by `getUserMedia` at all, so `'auto'` is as close to it as the hardware allows.
+
+`'frames'` still calls `startLocalStream()` once at pairing (one open/close), because the video track must be in the SDP before the offer for a later switch to `'auto'` to be a plain resume instead of a renegotiation. The track then sits paused for the session.
+
+**`'auto'` is on probation.** It is the reason `CAMERA_HANDOFF_MS`, the contention retry budget, and the reconnect's forced fallback to frame-based all exist. If frame-based preview proves good enough on its own, that branch and everything propping it up should be deleted.
+
 **The handoff between them is a race.** Neither releases the camera synchronously and neither reports when it's done, so each switch just waits `CAMERA_HANDOFF_MS` (`app/index.tsx`). Measured on a Pixel with `adb logcat -s Camera2CameraImpl:D org.webrtc.Logging:I`, the old 200ms lost in *both* directions: CameraX logged `onClosed()` 58ms after WebRTC had begun opening, and WebRTC's device closed 106ms after CameraX started force-opening. It only appeared to work because CameraX force-opens and retries. When the HAL declines the resulting stream combination you get `CameraState.ERROR_STREAM_CONFIG`, surfaced as `session/invalid-output-configuration`.
 
 So the timeout is a mitigation, not a fix — the `<Camera>`'s `onError` is what makes it safe, remounting on the contention codes (`session/invalid-output-configuration`, `session/camera-not-ready`, `session/hardware-cost-too-high`, `device/camera-already-in-use`) up to `CAMERA_MAX_RETRIES`. Keep an `onError` on any `<Camera>` that shares the device with WebRTC: without one the failure escapes as an unhandled error and the preview stays dead with no way back.
