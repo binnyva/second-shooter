@@ -1,0 +1,24 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    Android 11+ hides other packages from us unless we declare what we want to
+    see. These two entries are the only reason `queryIntentActivities` returns
+    anything, and they have to stay in step with GALLERY_QUERY_INTENTS in
+    GalleryAppsModule.kt - a query with no matching <intent> here comes back
+    empty rather than failing, so a mismatch looks like "no gallery apps
+    installed".
+
+    Deliberately narrow: no MAIN/LAUNCHER entry and no QUERY_ALL_PACKAGES.
+    Visibility is granted per package, not per query, so an app matched here is
+    also visible to getLaunchIntentForPackage and getApplicationLabel.
+  -->
+  <queries>
+    <intent>
+      <action android:name="android.intent.action.MAIN" />
+      <category android:name="android.intent.category.APP_GALLERY" />
+    </intent>
+    <intent>
+      <action android:name="android.intent.action.VIEW" />
+      <data android:mimeType="image/*" />
+    </intent>
+  </queries>
+</manifest>

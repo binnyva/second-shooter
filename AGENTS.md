@@ -27,7 +27,7 @@ npx expo start --dev-client
 
 Your device connects to this server and hot-reloads JavaScript changes instantly - no new APK needed.
 
-**When to rebuild**: Only run `npx expo run:android` again if you add/remove native dependencies, change `app.json` config, or modify the `android/` directory.
+**When to rebuild**: Only run `npx expo run:android` again if you add/remove native dependencies, add or change native code in `modules/`, change `app.json` config, or modify the `android/` directory.
 
 ### Release Build
 
@@ -89,17 +89,58 @@ So the timeout is a mitigation, not a fix — the `<Camera>`'s `onError` is what
 
 Turning a device's screen off backgrounds the app, and neither half of a pairing survives that on its own: Android ends every `getUserMedia` track and tears down vision-camera's session, and once ICE consent checks go unanswered both peer connections drop. Recovery (`src/hooks/useAppState.ts` plus the reconnect effects in `app/index.tsx`):
 
+- **A resume only remounts the camera when the camera screen is the focused one.** Leaving the app for the folder picker or the gallery resumes it too, and rebuilding a CameraX session behind whatever screen the user is actually looking at is wasted work landing exactly where they're waiting for a tap to respond. The camera is inactive while unfocused, and the navigation-focus effect remounts it on the way back.
 - **The camera device owns recovery**, because it is the offerer. It retries from `connectionState`, not from its own resume, so it also covers the case where only the remote's screen was off.
 - **Renegotiation is an ICE restart** (`createOffer({ iceRestart: true })`), not a new connection. SCTP survives an ICE restart, so the data channel and the negotiated media sections carry over and neither side has to re-pair. Retries are paced by `RECONNECT_GRACE_MS` / `RECONNECT_RETRY_MS` / `RECONNECT_MAX_ATTEMPTS`.
 - **A dropped connection falls back to `frame-based`** and stops the WebRTC track. Frame-based needs no lens, so the local preview works again and the reconnect has one less thing to get right; the stream-mode effect promotes it back to `webrtc` once connected.
 - **Because the data channel is reused, `onDataChannelOpen` fires only once per pairing.** The remote therefore re-issues `GET_STATE` on every transition to connected — without it, a remote that dropped in `webrtc` mode comes back rendering an `RTCView` for a track the camera has since abandoned.
 - **A resume can also find a dead track under a still-`connected` connection** (a short screen-off doesn't outlast ICE consent). The camera checks `hasLiveVideoTrack()` on every resume, independently of connection state.
 
+### Save Folder
+
+Captures go to the folder the user browsed to, addressed by the persisted SAF tree URI in the `saveFolderUri` setting (`src/utils/saveFolder.ts`). `MediaService.savePhoto()`/`saveVideo()` are the only readers of that setting — every shutter path goes through them, so nothing should call `MediaLibrary.createAssetAsync` directly.
+
+**The camera roll is the fallback, not a choice.** There's exactly one option in Settings — the folder — and `expo-media-library` catches everything it can't cover: before the user has picked a folder, off Android, and when a folder write fails. Settings shows which of those is in effect rather than presenting the camera roll as something to select.
+
+**Folders are Android-only.** They're built on the Storage Access Framework, which is the only way to write outside the sandbox under scoped storage; expo-file-system's SAF namespace throws `UnavailabilityError` off Android, and iOS has no equivalent grant that survives a restart (security-scoped bookmarks aren't persisted). `isSaveFolderSupported()` hides the row elsewhere.
+
+Two consequences worth knowing:
+
+- **The bytes go through base64.** expo-file-system has no native `file://` → `content://` copy (its `copyAsync` resolves the destination as a java `File`), so a folder save reads the capture as base64 and writes it back out. That holds ~4/3 of the file in memory, on the background save queue.
+- **A grant can die without warning** — revoked in system settings, or the folder deleted. Saves that fail fall back to the camera roll rather than losing the shot, and record the folder they failed against (`MediaService.getBrokenSaveFolder()`); Settings warns from that. Re-picking a folder clears it.
+
+A folder save produces no `MediaLibrary.Asset`, so `SavedMedia.uri` (not `asset.uri`) is what the shutter thumbnail follows.
+
+**Never list a save folder to find the newest photo.** `SAF.readDirectoryAsync` is `DocumentFile.listFiles()`: it queries every entry and marshals one URI string per file across the bridge. Measured on a folder of ~2000 files it costs over a second, and the paths that wanted it — the thumbnail, and the folder's writability check — both key on `saveFolderUri`, so picking a folder ran two of them back to back and the Settings row visibly froze.
+
+Instead `savePhoto()` writes the URI down (`@secondshooter_last_photo`, stored with the folder it belongs to) and `getLastPhotoUri()` reads it back. A folder we haven't saved to in this install shows no thumbnail until the next capture — a cold start and one empty button, against a freeze every time the folder is picked. Settings skips the writability check for a folder the picker just returned, since that grant is seconds old.
+
+**The folder picker has one pending request, and losing its result wedges it for the process.** `requestDirectoryPermissionsAsync` stores the promise in a single slot on the native module and clears it only in `OnActivityResult`; if that result never arrives — a dev-client reload or an activity recreation while the picker is in front will do it — every later request is rejected with "You have an unfinished permission request" until the process restarts. There is no JS-side reset. `pickSaveFolder()` therefore returns a status rather than a nullable folder, because 'cancelled' and 'stuck' look identical on screen (no picker, nothing changed) and only one of them is the user's doing; Settings tells them to relaunch. It also refuses to issue a second request while one is open, which is the one way our own code could cause the same rejection.
+
+**Nothing in the app lists a save folder any more**, and nothing should start. The writability probe that used to run on entry to Settings was the same `listFiles()` cost, aimed at the very provider the folder picker is about to need — it was replaced by the failed-save marker above. If a real permission check is ever needed, it has to be a native check against `contentResolver.persistedUriPermissions`; `getInfoAsync` is not an alternative, since on a tree URI it tries `openInputStream` and reports a perfectly good folder as missing.
+
+**The picker is opened with no `EXTRA_INITIAL_URI`.** Passing the current folder made DocumentsUI resolve and enumerate it before drawing: measured on Android 17 with ~2700 photos in the target folder, over five seconds of blank screen after the tap, and the stale listing kept showing through the next directory browsed to. Reopening where the user left off is not worth that.
+
+Two things about the picker that look like bugs and aren't: `ACTION_OPEN_DOCUMENT_TREE` lists only selectable items, i.e. **subfolders**, so a folder holding nothing but photos correctly appears empty; and DocumentsUI's own load of a large directory takes seconds, during which it shows the previous directory's contents.
+
+### Gallery App
+
+Tapping the shutter thumbnail calls `MediaService.openGallery()`, which opens the app named by the `galleryApp` setting — either the `'system-default'` sentinel or an Android package name. It's the only reader of that setting.
+
+**This needs native code, which is why `modules/gallery-apps/` exists.** Neither half is reachable from JS: enumerating what's installed needs `PackageManager.queryIntentActivities`, and launching a *particular* app needs an explicit intent, which `Linking.openURL` can't express — the old implementation could only fire an implicit `content://media/…` VIEW intent and let the system decide, so the setting had nothing to act on and was rendered permanently disabled.
+
+- **Android-only.** iOS has one Photos app and no way to see what else is installed, so `isGalleryAppChoiceSupported()` hides the row there. It's also false on Android when the native module is absent, which is what a *JS-only* reload of this feature looks like — adding a native module needs `npx expo run:android`, not just a Metro refresh.
+- **The `<queries>` block in the module's `AndroidManifest.xml` must stay in step with `galleryQueryIntents()`.** Android 11+ hides packages you haven't declared an interest in, and an undeclared query returns an empty list rather than failing — a mismatch shows up as "no gallery apps installed", not as an error. Visibility is granted per package, so an app matched by those queries is also visible to `getLaunchIntentForPackage`, which is how the list filters out editors and share targets without needing a MAIN/LAUNCHER query (or `QUERY_ALL_PACKAGES`).
+- **Launching resolves differently with and without a package.** With none, the intent goes out implicitly so the user's own default gallery wins. With one, the module pins the component itself, so any matching activity works — OEM galleries are inconsistent about declaring `CATEGORY_DEFAULT`.
+- **A stored package can stop being installed**, and nothing tells the setting. `openGallery()` falls back to the system default and then to `Linking`; Settings shows the raw package name when it can't find a label for it.
+
+`modules/` is autolinked by Expo without a config plugin (`nativeModulesDir` defaults to `./modules`), so `android/` — which is generated and gitignored — needs no edit.
+
 ### Key Services
 - `src/services/WebRTCService.ts` - P2P connection management
 - `src/services/CameraService.ts` - Camera operations wrapper using react-native-vision-camera
 - `src/services/SignalingService.ts` - Firebase Firestore signaling handler
-- `src/services/MediaService.ts` - Photo/video save operations using expo-media-library
+- `src/services/MediaService.ts` - Photo/video saves, routed by the `saveFolderUri` setting (see Save Folder); also opens the gallery app (see Gallery App)
 - `src/services/SettingsService.ts` - Persistent app settings via AsyncStorage
 
 ### Custom Hooks
@@ -113,6 +154,8 @@ Turning a device's screen off backgrounds the app, and neither half of a pairing
 ### Key Utilities
 - `src/utils/lensDetection.ts` - Detects physical lenses (ultra-wide/wide/telephoto) for zoom buttons
 - `src/utils/streamMode.ts` - Chooses WebRTC vs frame-based preview mode
+- `src/utils/saveFolder.ts` - SAF folder picking, persistence check, and tree-URI display names
+- `src/utils/galleryApps.ts` - Wraps the `gallery-apps` native module: support check, installed-app list, launch
 - `src/utils/sessionId.ts` - Session ID generation
 
 ### Shared Code (`shared/`)
@@ -179,8 +222,15 @@ Shared between the mobile app and the web remote:
 │   │   ├── permissions.ts
 │   │   ├── sessionId.ts
 │   │   ├── lensDetection.ts
+│   │   ├── saveFolder.ts
+│   │   ├── galleryApps.ts
 │   │   └── streamMode.ts
 │   └── __tests__/                # Jest unit tests (with mocks)
+├── modules/                      # Local Expo native modules (autolinked)
+│   └── gallery-apps/             # Android: list & launch gallery apps
+│       ├── expo-module.config.json
+│       ├── src/GalleryApps.ts    # JS side (optional native module)
+│       └── android/              # Kotlin module + <queries> manifest
 ├── shared/                       # Code shared with web remote
 │   ├── protocol.ts               # Data channel protocol types
 │   ├── signaling.ts              # Signaling message types

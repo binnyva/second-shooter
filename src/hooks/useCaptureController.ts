@@ -1,12 +1,12 @@
 import { useCallback, useRef } from 'react';
 import { PhotoFile } from 'react-native-vision-camera';
-import * as MediaLibrary from 'expo-media-library';
 import { CaptureQueue, CaptureRequest } from '../utils/captureQueue';
+import { SavedMedia } from '../services/MediaService';
 
 export interface CaptureControllerOptions {
   /** Capture a full-resolution photo. Resolves once the shot is taken. */
   takePhoto: (
-    onPhotoSaved?: (asset: MediaLibrary.Asset | null) => void
+    onPhotoSaved?: (saved: SavedMedia | null) => void
   ) => Promise<PhotoFile | null>;
   /** Capture a low-quality preview of the current framing. */
   takeSnapshot: () => Promise<string | null>;
@@ -16,8 +16,8 @@ export interface CaptureControllerOptions {
   releaseCamera: (wasHeld: boolean) => Promise<void>;
   /** The shot is on disk - use it for the local thumbnail. */
   onPhotoCaptured: (photo: PhotoFile) => void;
-  /** The gallery save finished (later than onPhotoCaptured). */
-  onPhotoSaved?: (asset: MediaLibrary.Asset | null) => void;
+  /** The save finished (later than onPhotoCaptured). */
+  onPhotoSaved?: (saved: SavedMedia | null) => void;
   /** A preview snapshot is ready to send to the remote. */
   onPreviewReady: (path: string, timestamp: number) => void;
   /** A remote-requested capture finished. */

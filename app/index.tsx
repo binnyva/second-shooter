@@ -17,7 +17,6 @@ import {
   useMicrophonePermission,
 } from 'react-native-vision-camera';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as MediaLibrary from 'expo-media-library';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { CameraControls } from '../src/components/CameraControls';
 import { QRCodeDisplay } from '../src/components/QRCodeDisplay';
@@ -34,7 +33,7 @@ import { useAppState } from '../src/hooks/useAppState';
 import { requestMediaLibraryPermission } from '../src/utils/permissions';
 import { detectLenses } from '../src/utils/lensDetection';
 import { determineStreamMode } from '../src/utils/streamMode';
-import { mediaService } from '../src/services/MediaService';
+import { mediaService, SavedMedia } from '../src/services/MediaService';
 import { webRTCService } from '../src/services/WebRTCService';
 import { Command, CameraState, LensInfo, StreamMode } from '../src/types';
 
@@ -313,16 +312,16 @@ export default function CameraScreen() {
     }, [notifyCaptureState, resumeLocalStream]),
 
     // Show the freshly captured file straight away rather than waiting on the
-    // gallery write and a MediaLibrary query.
+    // save to finish.
     onPhotoCaptured: useCallback((photo: PhotoFile) => {
       setLastPhotoUri(photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`);
     }, []),
 
-    // Once saved, switch the thumbnail to the gallery asset - the capture temp
+    // Once saved, switch the thumbnail to the saved copy - the capture temp
     // file isn't ours to rely on long term.
-    onPhotoSaved: useCallback((asset: MediaLibrary.Asset | null) => {
-      if (asset) {
-        setLastPhotoUri(asset.uri);
+    onPhotoSaved: useCallback((saved: SavedMedia | null) => {
+      if (saved) {
+        setLastPhotoUri(saved.uri);
       }
     }, []),
 
@@ -372,6 +371,11 @@ export default function CameraScreen() {
     }
     wasFocusedRef.current = isFocused;
   }, [isFocused]);
+
+  // Read by the resume handler, which is memoised and would otherwise close
+  // over a stale value.
+  const isFocusedRef = useRef(isFocused);
+  isFocusedRef.current = isFocused;
 
   const cameraIsActive = isFocused && !cameraState.isRecording && !isWebRTCUsingCamera;
 
@@ -437,16 +441,18 @@ export default function CameraScreen() {
     }
   }, [backDevice, cameraState.facing, cameraState.zoom]);
 
-  // Load last photo on mount
+  // Load the last photo from wherever captures are being saved. Re-runs when
+  // that changes, so the thumbnail doesn't keep showing a camera-roll shot
+  // after the user points saves at a folder.
   useEffect(() => {
     const loadLastPhoto = async () => {
-      const photo = await mediaService.getLastPhoto();
-      if (photo) {
-        setLastPhotoUri(photo.uri);
+      const uri = await mediaService.getLastPhotoUri();
+      if (uri) {
+        setLastPhotoUri(uri);
       }
     };
     loadLastPhoto();
-  }, []);
+  }, [settings.saveFolderUri]);
 
   // Handle QR code display and session creation
   const handleShowQR = async () => {
@@ -565,6 +571,14 @@ export default function CameraScreen() {
     // deactivated then, so there is no session to restart anyway.
     if (isCapturingRef.current) return;
     if (isStreamingRef.current && streamModeRef.current === 'webrtc') return;
+
+    // Not while another screen is on top. Every trip out of the app and back -
+    // the folder picker, the gallery - resumes this screen too, and rebuilding
+    // a CameraX session there is wasted work at the worst moment: it lands
+    // exactly as the user is waiting for the screen they're actually on to
+    // respond. The camera isn't even active while unfocused, and the
+    // focus effect above remounts it when they come back.
+    if (!isFocusedRef.current) return;
 
     setIsCameraInitialized(false);
     setCameraKey(prev => prev + 1);

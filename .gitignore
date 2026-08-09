@@ -41,6 +41,9 @@ yarn-error.*
 /ios
 /android
 
+# local native module build output
+modules/*/android/build/
+
 # Me Specific
 0Meta/
 coverage/

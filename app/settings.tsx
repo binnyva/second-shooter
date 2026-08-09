@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   ScrollView,
@@ -8,19 +8,28 @@ import {
   Switch,
   Modal,
   Pressable,
+  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useSettings } from '../src/hooks/useSettings';
+import { isSaveFolderSupported, pickSaveFolder } from '../src/utils/saveFolder';
+import { mediaService } from '../src/services/MediaService';
+import {
+  GalleryAppInfo,
+  isGalleryAppChoiceSupported,
+  listGalleryApps,
+} from '../src/utils/galleryApps';
 import {
   TimerDuration,
   AspectRatio,
   GridOverlay,
-  SaveLocation,
   PreviewQuality,
   PreviewMode,
   FlashMode,
+  GalleryApp,
+  SYSTEM_DEFAULT_GALLERY,
 } from '../src/types';
 
 // Option definitions
@@ -68,10 +77,10 @@ const FLASH_OPTIONS: { value: FlashMode; label: string }[] = [
   { value: 'auto', label: 'Auto' },
 ];
 
-const SAVE_LOCATION_OPTIONS: { value: SaveLocation; label: string }[] = [
-  { value: 'camera-roll', label: 'Camera Roll' },
-  { value: 'app-storage', label: 'App Storage' },
-];
+const SYSTEM_DEFAULT_GALLERY_OPTION = {
+  value: SYSTEM_DEFAULT_GALLERY,
+  label: 'System Default',
+};
 
 // Setting Row Component with Modal Picker
 function SettingRow<T extends string | number>({
@@ -165,7 +174,116 @@ function SettingRow<T extends string | number>({
 export default function SettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { settings, updateSetting, isLoaded } = useSettings();
+  const { settings, updateSetting, updateSettings, isLoaded } = useSettings();
+
+  // Which gallery apps are installed is a device fact, not a setting, so it's
+  // read once per visit to Settings rather than persisted. Empty until the
+  // native query comes back - and permanently empty where the choice isn't
+  // supported, which is what hides the row.
+  const [galleryApps, setGalleryApps] = useState<GalleryAppInfo[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listGalleryApps().then((apps) => {
+      if (!cancelled) {
+        setGalleryApps(apps);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const galleryAppOptions = [
+    SYSTEM_DEFAULT_GALLERY_OPTION,
+    ...galleryApps.map((app) => ({ value: app.packageName, label: app.label })),
+  ];
+
+  // A remembered package can have been uninstalled since it was picked, and
+  // then it isn't in the list to look a name up in. Showing the raw package
+  // name beats showing 'System Default' for something that isn't set to it.
+  const galleryAppLabel =
+    settings.galleryApp === SYSTEM_DEFAULT_GALLERY
+      ? SYSTEM_DEFAULT_GALLERY_OPTION.label
+      : galleryApps.find((app) => app.packageName === settings.galleryApp)?.label ??
+        settings.galleryApp;
+
+  // A stored folder can stop working - the grant is revocable from system
+  // settings and the folder itself can be deleted - and nothing tells the app
+  // until a save fails. That failure is exactly what this reads: no probing,
+  // and it reports what actually happened to the last photo.
+  const [folderMissing, setFolderMissing] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!settings.saveFolderUri) {
+      setFolderMissing(false);
+      return;
+    }
+    mediaService.getBrokenSaveFolder().then((broken) => {
+      if (!cancelled) {
+        setFolderMissing(broken === settings.saveFolderUri);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.saveFolderUri]);
+
+  // Tapping the row goes straight to the system folder browser - there's only
+  // one thing to choose here, so a menu in front of it would be a dead step.
+  const chooseFolder = async () => {
+    const result = await pickSaveFolder();
+
+    if (result.status === 'picked') {
+      // A fresh pick is a repair attempt: whatever failed last time, this
+      // folder's grant is seconds old and deserves a clean slate.
+      await mediaService.clearBrokenSaveFolder();
+      // The two values move together: a name without its URI has nowhere to
+      // write, and a URI without a name has nothing to show.
+      await updateSettings({
+        saveFolderUri: result.folder.uri,
+        saveFolderName: result.folder.name,
+      });
+      return;
+    }
+
+    // Backing out of the picker is a decision, and the picker already being up
+    // means the tap was a duplicate. Neither needs to be reported back.
+    if (result.status === 'cancelled' || result.status === 'already-open') {
+      return;
+    }
+
+    // Everything else means no picker appeared. Saying so matters more than
+    // usual here: the screen looks exactly the same as a cancel, so without a
+    // message the user is left tapping a button that does nothing.
+    if (result.status === 'stuck') {
+      Alert.alert(
+        "Folder picker won't open",
+        'Android still thinks an earlier folder request is open. Close the app completely and reopen it, then try again.'
+      );
+      return;
+    }
+
+    Alert.alert(
+      "Folder picker won't open",
+      result.status === 'failed'
+        ? result.message
+        : 'This device has no folder picker. Photos go to the camera roll.'
+    );
+  };
+
+  const folderLabel = !settings.saveFolderName
+    ? 'Camera Roll'
+    : folderMissing
+      ? `${settings.saveFolderName} (unavailable)`
+      : settings.saveFolderName;
+
+  const saveFolderHint = !settings.saveFolderUri
+    ? 'Photos go wherever this phone keeps camera photos. Pick a folder to put them somewhere you choose.'
+    : folderMissing
+      ? "The last photo couldn't be written here, so it went to the camera roll. Pick the folder again to retry."
+      : 'Photos are written to this folder. The gallery app may take a while to notice them.';
 
   if (!isLoaded) {
     return (
@@ -235,28 +353,42 @@ export default function SettingsScreen() {
         {/* Media Section */}
         <Text style={styles.sectionTitle}>Media</Text>
         <View style={styles.section}>
-          <SettingRow
-            label="Save Location"
-            value={settings.saveLocation}
-            displayValue={
-              settings.saveLocation === 'camera-roll'
-                ? 'Camera Roll'
-                : 'App Storage'
-            }
-            options={SAVE_LOCATION_OPTIONS}
-            onSelect={(value) => updateSetting('saveLocation', value)}
-          />
-          <TouchableOpacity style={styles.row} disabled activeOpacity={1}>
-            <Text style={[styles.rowLabel, styles.rowLabelDisabled]}>
-              Gallery App
-            </Text>
-            <View style={styles.rowValue}>
-              <Text style={[styles.rowValueText, styles.rowValueDisabled]}>
-                System Default
-              </Text>
-            </View>
-          </TouchableOpacity>
+          {isSaveFolderSupported() && (
+            <TouchableOpacity
+              style={styles.row}
+              onPress={chooseFolder}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.rowLabel}>Save Folder</Text>
+              <View style={styles.rowValue}>
+                <Text
+                  style={[
+                    styles.rowValueText,
+                    styles.rowValueTruncated,
+                    folderMissing && styles.rowValueWarning,
+                  ]}
+                  numberOfLines={1}
+                  ellipsizeMode="head"
+                >
+                  {folderLabel}
+                </Text>
+                <Feather name="chevron-right" size={18} color="#666" />
+              </View>
+            </TouchableOpacity>
+          )}
+          {isGalleryAppChoiceSupported() && (
+            <SettingRow
+              label="Gallery App"
+              value={settings.galleryApp}
+              displayValue={galleryAppLabel}
+              options={galleryAppOptions}
+              onSelect={(value: GalleryApp) => updateSetting('galleryApp', value)}
+            />
+          )}
         </View>
+        {isSaveFolderSupported() && (
+          <Text style={styles.sectionFooter}>{saveFolderHint}</Text>
+        )}
 
         {/* Remote Section */}
         <Text style={styles.sectionTitle}>Remote Preview</Text>
@@ -356,6 +488,13 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
   },
+  sectionFooter: {
+    fontSize: 13,
+    color: '#888',
+    marginTop: 8,
+    paddingHorizontal: 4,
+    lineHeight: 18,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -383,6 +522,13 @@ const styles = StyleSheet.create({
   },
   rowValueDisabled: {
     color: '#555',
+  },
+  // Folder paths get long; keep them from pushing the chevron off the row.
+  rowValueTruncated: {
+    maxWidth: 220,
+  },
+  rowValueWarning: {
+    color: '#ff9f0a',
   },
   modalOverlay: {
     flex: 1,

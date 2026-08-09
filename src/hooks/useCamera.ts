@@ -1,8 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Camera, PhotoFile, VideoFile } from 'react-native-vision-camera';
-import * as MediaLibrary from 'expo-media-library';
 import { CameraState, FlashMode, CaptureMode, CameraFacing } from '../types';
-import { mediaService } from '../services/MediaService';
+import { mediaService, SavedMedia } from '../services/MediaService';
 
 const DEFAULT_STATE: CameraState = {
   zoom: 1,
@@ -72,7 +71,7 @@ export function useCamera(initialState?: Partial<CameraState>) {
   // Resolves as soon as the capture completes; `onPhotoSaved` fires later,
   // when the background gallery save finishes.
   const takePhoto = useCallback(async (
-    onPhotoSaved?: (asset: MediaLibrary.Asset | null) => void
+    onPhotoSaved?: (saved: SavedMedia | null) => void
   ): Promise<PhotoFile | null> => {
     if (!cameraRef.current) {
       console.error('Camera ref not set');
@@ -89,9 +88,9 @@ export function useCamera(initialState?: Partial<CameraState>) {
         flash: state.flash === 'auto' ? 'on' : state.flash,
         enableShutterSound: false,
       });
-      // Saving to the gallery is slow (file copy + media store insert) and
-      // nothing on the capture path needs it to finish, so it runs in the
-      // background - the camera is free for the next shot immediately.
+      // Saving is slow (file copy, plus a media store insert for the camera
+      // roll) and nothing on the capture path needs it to finish, so it runs
+      // in the background - the camera is free for the next shot immediately.
       mediaService.savePhotoInBackground(photo, onPhotoSaved);
       return photo;
     };
@@ -154,8 +153,8 @@ export function useCamera(initialState?: Partial<CameraState>) {
       onRecordingFinished: async (video) => {
         updateState({ isRecording: false });
 
-        // Save to gallery
-        await mediaService.saveVideoToGallery(video);
+        // Save to the configured location
+        await mediaService.saveVideo(video);
 
         onFinished?.(video);
       },

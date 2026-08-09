@@ -81,8 +81,8 @@ export function CameraView({
         enableShutterSound: false,
       });
 
-      // Save to gallery
-      await mediaService.savePhotoToGallery(photo);
+      // Save to the configured location
+      await mediaService.savePhoto(photo);
 
       onPhotoTaken?.(photo);
     } catch (error) {
