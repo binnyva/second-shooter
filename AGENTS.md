@@ -165,6 +165,10 @@ Shared between the mobile app and the web remote:
 - `shared/session-link.ts` - Session URL building/parsing (`/s/{sessionId}` links)
 - `shared/ice.ts` - STUN server list, ICE tuning constants, and the `getIceServers` callable's name/region/response parsing
 
+### Native Android Test App (`native-android/`)
+
+A standalone Kotlin/Compose proof of concept for a possible rewrite. It shares nothing with the Expo app's code; it pairs with the web remote through the same Firestore session layout and protocol, and reads its Firebase config from the root `.env` at build time. If you change `shared/protocol.ts` or the signaling layout, its `Protocol.kt` and `Signaling.kt` are hand-written copies that need the same change. Build with `cd native-android && ./gradlew :app:installDebug` (with `ANDROID_HOME` set).
+
 ### Tech Stack
 - **Framework**: Expo (with prebuild for native modules)
 - **Navigation**: Expo Router
@@ -240,6 +244,7 @@ Shared between the mobile app and the web remote:
 │   ├── src/index.ts              # getIceServers - mints Cloudflare TURN credentials
 │   └── .env.example              # Cloudflare TURN key ID template (.env is untracked)
 ├── web-remote/                   # Browser-based remote (Vite + React)
+├── native-android/               # Kotlin test app (CameraX → WebRTC), see its README
 │   └── src/lib/                  # firebase, signaling, webrtc clients
 ├── app.json                      # Expo configuration with permissions & deep links
 ├── .env.example                  # Firebase env var template

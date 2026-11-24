@@ -1,0 +1,105 @@
+package com.secondshooter.nativepoc
+
+import com.google.firebase.Timestamp
+import com.google.firebase.firestore.DocumentChange
+import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.tasks.await
+import org.webrtc.IceCandidate
+import java.security.SecureRandom
+import java.util.Date
+
+/**
+ * Same Firestore layout as src/services/SignalingService.ts, so the existing
+ * web remote can join. The camera is the offerer: it writes the offer and its
+ * candidates, and listens for the answer and the remote's candidates.
+ */
+class Signaling(val sessionId: String) {
+    private val sessionRef = FirebaseFirestore.getInstance()
+        .collection("sessions")
+        .document(sessionId)
+    private val listeners = mutableListOf<ListenerRegistration>()
+
+    suspend fun create() {
+        sessionRef.set(
+            mapOf(
+                "createdAt" to FieldValue.serverTimestamp(),
+                "expireAt" to expireAt(),
+                "status" to "waiting",
+            )
+        ).await()
+    }
+
+    suspend fun sendOffer(sdp: String) {
+        sessionRef.set(
+            mapOf(
+                "offer" to mapOf("type" to "offer", "sdp" to sdp),
+                "status" to "offer_sent",
+            ),
+            SetOptions.merge(),
+        ).await()
+    }
+
+    suspend fun addOfferCandidate(candidate: IceCandidate) {
+        sessionRef.collection("offerCandidates").add(
+            mapOf(
+                "candidate" to candidate.sdp,
+                "sdpMLineIndex" to candidate.sdpMLineIndex,
+                "sdpMid" to candidate.sdpMid,
+                "expireAt" to expireAt(),
+            )
+        ).await()
+    }
+
+    fun onAnswer(callback: (String) -> Unit) {
+        var lastSdp: String? = null
+        listeners += sessionRef.addSnapshotListener { snapshot, _ ->
+            val answer = snapshot?.get("answer") as? Map<*, *> ?: return@addSnapshotListener
+            val sdp = answer["sdp"] as? String ?: return@addSnapshotListener
+            if (sdp != lastSdp) {
+                lastSdp = sdp
+                callback(sdp)
+            }
+        }
+    }
+
+    fun onAnswerCandidate(callback: (IceCandidate) -> Unit) {
+        listeners += sessionRef.collection("answerCandidates").addSnapshotListener { snapshot, _ ->
+            snapshot?.documentChanges
+                ?.filter { it.type == DocumentChange.Type.ADDED }
+                ?.forEach { change ->
+                    val doc = change.document
+                    val candidate = doc.getString("candidate") ?: return@forEach
+                    callback(
+                        IceCandidate(
+                            doc.getString("sdpMid"),
+                            doc.getLong("sdpMLineIndex")?.toInt() ?: 0,
+                            candidate,
+                        )
+                    )
+                }
+        }
+    }
+
+    /** Candidate docs are left for the TTL policy, as in the RN app. */
+    fun close() {
+        listeners.forEach { it.remove() }
+        listeners.clear()
+        sessionRef.delete()
+    }
+
+    companion object {
+        private const val SESSION_TTL_MS = 60 * 60 * 1000L
+        private const val ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        private val random = SecureRandom()
+
+        fun generateSessionId(): String =
+            (1..6).map { ALPHABET[random.nextInt(ALPHABET.length)] }.joinToString("")
+
+        fun remoteUrl(sessionId: String) = "https://apps.binnyva.com/second-shooter/s/$sessionId"
+
+        private fun expireAt() = Timestamp(Date(System.currentTimeMillis() + SESSION_TTL_MS))
+    }
+}
