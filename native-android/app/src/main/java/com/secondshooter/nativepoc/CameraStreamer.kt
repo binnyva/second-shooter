@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
+import android.graphics.Matrix
 import android.net.Uri
 import android.provider.MediaStore
 import android.util.Base64
@@ -30,6 +31,7 @@ import kotlinx.coroutines.withContext
 import org.webrtc.EglBase
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.SurfaceTextureHelper
+import org.webrtc.TextureBufferImpl
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
@@ -65,9 +67,8 @@ class CameraStreamer(
     private val textureHelper =
         SurfaceTextureHelper.create("CameraXToWebRTC", eglBase.eglBaseContext)
 
-    // CameraX delivers sensor-oriented buffers into a SurfaceTexture and tells
-    // us how far to rotate them; WebRTC carries that as frame rotation (CVO),
-    // which the browser applies.
+    // How far the sensor-oriented image must turn to be upright. WebRTC
+    // carries it as frame rotation (CVO), which the browser applies.
     @Volatile private var rotationDegrees = 0
 
     private val framesThisSecond = AtomicInteger(0)
@@ -106,12 +107,27 @@ class CameraStreamer(
         videoSource.capturerObserver.onCapturerStarted(true)
         textureHelper.startListening { frame ->
             framesThisSecond.incrementAndGet()
-            // The helper releases `frame` after this callback; retain the
-            // buffer for the re-rotated frame we pass on.
-            frame.buffer.retain()
-            val rotated = VideoFrame(frame.buffer, rotationDegrees, frame.timestampNs)
-            videoSource.capturerObserver.onFrameCaptured(rotated)
-            rotated.release()
+            val rotation = rotationDegrees
+            // The camera service bakes the sensor orientation into the
+            // SurfaceTexture's transform matrix, so the texture is already
+            // drawn rotated inside a buffer still sized as the sensor
+            // (landscape): rotated *and* squashed. Undo that rotation in the
+            // matrix and carry it as frame metadata instead, the same way
+            // WebRTC's own Camera2Session does. The new buffer is retained;
+            // the helper releases the original after this callback.
+            val buffer = frame.buffer as TextureBufferImpl
+            val unrotate = Matrix().apply {
+                preTranslate(0.5f, 0.5f)
+                preRotate(-rotation.toFloat())
+                preTranslate(-0.5f, -0.5f)
+            }
+            val upright = VideoFrame(
+                buffer.applyTransformMatrix(unrotate, buffer.width, buffer.height),
+                rotation,
+                frame.timestampNs,
+            )
+            videoSource.capturerObserver.onFrameCaptured(upright)
+            upright.release()
         }
 
         preview.setSurfaceProvider(mainExecutor) { request ->

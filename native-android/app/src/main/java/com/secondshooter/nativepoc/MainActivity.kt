@@ -15,6 +15,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -58,6 +59,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Like the system camera: usable from the lock screen, so a phone on a
+        // tripod doesn't need unlocking to start a session.
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
 
         FirebaseSetup.init(applicationContext)
         controller = PairingController(this, lifecycleScope)
@@ -83,8 +88,11 @@ class MainActivity : ComponentActivity() {
 private fun CameraScreen(controller: PairingController) {
     val ui = controller.ui
     Box(Modifier.fillMaxSize().background(Color.Black)) {
+        // SurfaceViewRenderer crops frames to its own aspect ratio, so give it
+        // the stream's 3:4 rather than the screen's, or the viewfinder shows
+        // less than the photo will.
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.align(Alignment.Center).fillMaxWidth().aspectRatio(3f / 4f),
             factory = { context ->
                 SurfaceViewRenderer(context).apply {
                     init(controller.eglBase.eglBaseContext, null)
