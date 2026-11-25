@@ -74,3 +74,39 @@ export type ConnectionState =
   | 'connecting'
   | 'connected'
   | 'failed';
+
+// Every Command and Response `type`, as runtime values.
+//
+// `satisfies` rejects a name that isn't in the union, and the Assert types
+// below fail to compile when a type is added to the union but not listed
+// here. src/__tests__/protocolFixtures.test.ts then requires an example of
+// each one in shared/protocol-fixtures.json, and the Kotlin app's tests
+// decode every example, so a protocol change can't skip the native copy.
+export const COMMAND_TYPES = [
+  'TAKE_PHOTO',
+  'START_RECORDING',
+  'STOP_RECORDING',
+  'SET_ZOOM',
+  'SET_FLASH',
+  'SWITCH_CAMERA',
+  'GET_STATE',
+] as const satisfies readonly Command['type'][];
+
+export const RESPONSE_TYPES = [
+  'PHOTO_TAKEN',
+  'RECORDING_STARTED',
+  'RECORDING_STOPPED',
+  'STATE_UPDATE',
+  'ERROR',
+  'CAPTURE_STATE',
+  'FRAME_DATA',
+  'PHOTO_DATA',
+] as const satisfies readonly Response['type'][];
+
+type AssertNever<T extends never> = T;
+export type AllCommandTypesListed = AssertNever<
+  Exclude<Command['type'], (typeof COMMAND_TYPES)[number]>
+>;
+export type AllResponseTypesListed = AssertNever<
+  Exclude<Response['type'], (typeof RESPONSE_TYPES)[number]>
+>;

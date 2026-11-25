@@ -1,4 +1,4 @@
-package com.secondshooter.nativepoc
+package com.secondshooter.nativepoc.rtc
 
 import android.util.Log
 import kotlinx.coroutines.suspendCancellableCoroutine

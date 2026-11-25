@@ -1,18 +1,12 @@
-package com.secondshooter.nativepoc
+package com.secondshooter.nativepoc.camera
 
-import android.content.ContentValues
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.net.Uri
-import android.provider.MediaStore
-import android.util.Base64
 import android.util.Log
 import android.util.Range
 import android.util.Size
 import android.view.Surface
-import androidx.camera.core.AspectRatio
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
@@ -24,10 +18,8 @@ import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
 import org.webrtc.EglBase
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.SurfaceTextureHelper
@@ -35,10 +27,6 @@ import org.webrtc.TextureBufferImpl
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
-import java.io.ByteArrayOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -144,7 +132,12 @@ class CameraStreamer(
         }
     }
 
-    suspend fun bind(owner: LifecycleOwner, initialZoom: Float) {
+    /**
+     * Bind to a lifecycle. Called again with each new owner (a recreated
+     * activity, a new navigation entry): the use cases and the WebRTC track
+     * live in the ViewModel, so the stream carries on with the same track.
+     */
+    suspend fun bind(owner: LifecycleOwner) {
         val provider = ProcessCameraProvider.getInstance(context).await()
         provider.unbindAll()
         val cam = provider.bindToLifecycle(
@@ -153,8 +146,9 @@ class CameraStreamer(
             preview,
             imageCapture,
         )
+        val previousZoom = camera?.cameraInfo?.zoomState?.value?.zoomRatio
         camera = cam
-        setZoom(initialZoom)
+        previousZoom?.let { setZoom(it) }
     }
 
     /** Camera-side frames per second since the last call. */
@@ -176,37 +170,11 @@ class CameraStreamer(
         return clamped
     }
 
-    /**
-     * Zoom buttons for the web remote. CameraX's back camera on a Pixel is a
-     * logical multi-camera, so the zoom ratio alone moves between the
-     * ultra-wide, main and 5x telephoto sensors.
-     */
-    fun lenses(): List<Lens> {
-        val range = zoomRange
-        return buildList {
-            if (range.start < 0.95f) {
-                add(Lens("ultra-wide", formatZoom(range.start), range.start))
-            }
-            add(Lens("wide", "1", 1f))
-            add(Lens("digital-2x", "2", 2f))
-            if (range.endInclusive >= 5f) add(Lens("telephoto-1", "5", 5f))
-        }
-    }
+    /** Zoom buttons for the current camera's zoom range. */
+    fun lenses(): List<Lens> = zoomRange.let { Lenses.forZoomRange(it.start, it.endInclusive) }
 
-    suspend fun takePhoto(): Uri {
-        val name = "SS_" + SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/SecondShooter")
-        }
-        val options = ImageCapture.OutputFileOptions.Builder(
-            context.contentResolver,
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            values,
-        ).build()
-
-        return suspendCancellableCoroutine { cont ->
+    suspend fun takePhoto(options: ImageCapture.OutputFileOptions): Uri =
+        suspendCancellableCoroutine { cont ->
             imageCapture.takePicture(
                 options,
                 mainExecutor,
@@ -223,24 +191,6 @@ class CameraStreamer(
                 },
             )
         }
-    }
-
-    /** A small JPEG of the saved photo for the remote's thumbnail (PHOTO_DATA). */
-    suspend fun thumbnailBase64(uri: Uri, maxEdge: Int = 720): String =
-        withContext(Dispatchers.IO) {
-            val source = ImageDecoder.createSource(context.contentResolver, uri)
-            // ImageDecoder applies the EXIF orientation for us.
-            val bitmap = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-                val longEdge = maxOf(info.size.width, info.size.height)
-                var sample = 1
-                while (longEdge / (sample * 2) >= maxEdge) sample *= 2
-                decoder.setTargetSampleSize(sample)
-            }
-            val out = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 70, out)
-            bitmap.recycle()
-            Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
-        }
 
     fun release() {
         textureHelper.stopListening()
@@ -251,8 +201,5 @@ class CameraStreamer(
 
     companion object {
         private const val TAG = "SSCamera"
-
-        private fun formatZoom(zoom: Float): String =
-            String.format(Locale.US, "%.1f", zoom).trimEnd('0').trimEnd('.')
     }
 }

@@ -11,13 +11,13 @@
         android:label="SS Native Test"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
-        <!-- Portrait-locked and never recreated: a rotation would tear down the
-             camera, the peer connection and the Firestore session mid-test. -->
+        <!-- Portrait-locked like a camera viewfinder. Other config changes
+             (dark mode, font size) recreate the activity on purpose: the
+             camera, track and connection live in a ViewModel and survive it. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="portrait"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode">
+            android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

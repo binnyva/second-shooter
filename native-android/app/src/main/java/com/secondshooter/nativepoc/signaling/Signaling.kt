@@ -1,4 +1,4 @@
-package com.secondshooter.nativepoc
+package com.secondshooter.nativepoc.signaling
 
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.DocumentChange
@@ -8,7 +8,6 @@ import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.tasks.await
 import org.webrtc.IceCandidate
-import java.security.SecureRandom
 import java.util.Date
 
 /**
@@ -92,13 +91,6 @@ class Signaling(val sessionId: String) {
 
     companion object {
         private const val SESSION_TTL_MS = 60 * 60 * 1000L
-        private const val ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-        private val random = SecureRandom()
-
-        fun generateSessionId(): String =
-            (1..6).map { ALPHABET[random.nextInt(ALPHABET.length)] }.joinToString("")
-
-        fun remoteUrl(sessionId: String) = "https://apps.binnyva.com/second-shooter/s/$sessionId"
 
         private fun expireAt() = Timestamp(Date(System.currentTimeMillis() + SESSION_TTL_MS))
     }

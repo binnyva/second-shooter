@@ -1,0 +1,52 @@
+{
+  "commands": [
+    { "type": "TAKE_PHOTO" },
+    { "type": "START_RECORDING" },
+    { "type": "STOP_RECORDING" },
+    { "type": "SET_ZOOM", "level": 2.5 },
+    { "type": "SET_FLASH", "mode": "auto" },
+    { "type": "SWITCH_CAMERA" },
+    { "type": "GET_STATE" }
+  ],
+  "responses": [
+    { "type": "PHOTO_TAKEN", "success": true },
+    { "type": "PHOTO_TAKEN", "success": false, "error": "Capture failed" },
+    { "type": "RECORDING_STARTED" },
+    { "type": "RECORDING_STOPPED", "success": true },
+    { "type": "RECORDING_STOPPED", "success": false, "error": "No space left" },
+    {
+      "type": "STATE_UPDATE",
+      "state": {
+        "zoom": 2,
+        "flash": "off",
+        "facing": "back",
+        "captureMode": "photo",
+        "isRecording": false,
+        "streamMode": "webrtc"
+      },
+      "lenses": [
+        { "id": "ultra-wide", "label": "0.5", "zoom": 0.5, "isActive": false },
+        { "id": "wide", "label": "1", "zoom": 1, "isActive": false },
+        { "id": "digital-2x", "label": "2", "zoom": 2, "isActive": true },
+        { "id": "telephoto-1", "label": "5", "zoom": 5, "isActive": false }
+      ],
+      "videoNeedsRotation": false,
+      "previewZoomLimited": false,
+      "streamMode": "webrtc"
+    },
+    {
+      "type": "STATE_UPDATE",
+      "state": {
+        "zoom": 1,
+        "flash": "on",
+        "facing": "front",
+        "captureMode": "video",
+        "isRecording": true
+      }
+    },
+    { "type": "ERROR", "message": "Something went wrong" },
+    { "type": "CAPTURE_STATE", "capturing": true },
+    { "type": "FRAME_DATA", "frameId": 42, "data": "AAAA", "timestamp": 1764000000000 },
+    { "type": "PHOTO_DATA", "data": "AAAA", "timestamp": 1764000000000 }
+  ]
+}
