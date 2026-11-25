@@ -3,6 +3,7 @@ package com.secondshooter.nativepoc.session
 import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
+import android.view.OrientationEventListener
 import android.util.Log
 import androidx.camera.video.Recording
 import androidx.camera.video.VideoRecordEvent
@@ -13,6 +14,8 @@ import androidx.lifecycle.viewModelScope
 import com.secondshooter.nativepoc.camera.CameraStreamer
 import com.secondshooter.nativepoc.camera.Lens
 import com.secondshooter.nativepoc.camera.Lenses
+import com.secondshooter.nativepoc.camera.captureRotationFor
+import com.secondshooter.nativepoc.protocol.FlashMode
 import com.secondshooter.nativepoc.media.CaptureStore
 import com.secondshooter.nativepoc.protocol.CameraFacing
 import com.secondshooter.nativepoc.protocol.CameraState
@@ -39,10 +42,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.PeerConnection
@@ -62,6 +69,10 @@ data class CameraUiState(
     /** Elapsed recording time, while recording. */
     val recordedSeconds: Long = 0,
     val videoSupported: Boolean = true,
+    val facing: CameraFacing = CameraFacing.BACK,
+    val hasFrontCamera: Boolean = false,
+    /** Seconds left on the self-timer, or null when it isn't running. */
+    val countdown: Int? = null,
 )
 
 const val INITIAL_ZOOM = 2f
@@ -104,9 +115,33 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     private val _micPermissionRequest = MutableStateFlow(false)
     val micPermissionRequest: StateFlow<Boolean> = _micPermissionRequest.asStateFlow()
 
+    /**
+     * One photo at a time, whoever asked (remote, screen, volume keys): a
+     * burst queues up behind the shot in flight, as src/utils/captureQueue.ts
+     * did. No camera lock to manage any more, so that's all it does.
+     */
+    private val captureQueue = Mutex()
+    private var countdownJob: Job? = null
+
+    private val orientationListener = object : OrientationEventListener(app) {
+        override fun onOrientationChanged(degrees: Int) {
+            if (degrees == ORIENTATION_UNKNOWN) return
+            camera.setCaptureRotation(captureRotationFor(degrees), recording = recording != null)
+        }
+    }
+
     init {
         FirebaseSetup.init(app)
         startStatsLoop()
+        orientationListener.enable()
+        // Flash lives in settings, so a change from the remote, the screen or
+        // a previous run all land here.
+        viewModelScope.launch {
+            settings.map { it.flash }.distinctUntilChanged().collect { flash ->
+                camera.setFlash(flash)
+                sendState()
+            }
+        }
     }
 
     /** Call with each lifecycle the camera should follow (after permission is granted). */
@@ -119,9 +154,7 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                     camera.setZoom(INITIAL_ZOOM)
                     startSession()
                 }
-                _ui.update {
-                    it.copy(zoom = camera.zoom, lenses = camera.lenses(), videoSupported = camera.videoSupported)
-                }
+                refreshCameraUi()
             } catch (e: Exception) {
                 Log.e(TAG, "Camera bind failed", e)
                 _ui.update { it.copy(status = "Camera failed: ${e.message}") }
@@ -224,9 +257,50 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
             Command.TakePhoto -> takePhoto(fromRemote = true)
             Command.StartRecording -> requestStartRecording()
             Command.StopRecording -> stopRecording()
-            is Command.SetFlash,
-            Command.SwitchCamera ->
-                send(Response.ErrorMessage("${command::class.simpleName} isn't supported in this build yet"))
+            is Command.SetFlash -> setFlash(command.mode)
+            Command.SwitchCamera -> switchCamera()
+        }
+    }
+
+    private fun refreshCameraUi() {
+        _ui.update {
+            it.copy(
+                zoom = camera.zoom,
+                lenses = camera.backLenses(),
+                videoSupported = camera.videoSupported,
+                facing = camera.facing,
+                hasFrontCamera = camera.hasFrontCamera,
+            )
+        }
+    }
+
+    fun setFlash(mode: FlashMode) {
+        viewModelScope.launch { settingsRepository.update { it.copy(flash = mode) } }
+    }
+
+    fun cycleFlashFromUi() {
+        val next = when (settings.value.flash) {
+            FlashMode.OFF -> FlashMode.ON
+            FlashMode.ON -> FlashMode.AUTO
+            FlashMode.AUTO -> FlashMode.OFF
+        }
+        setFlash(next)
+    }
+
+    fun switchCamera() {
+        if (recording != null) {
+            send(Response.ErrorMessage("Can't switch cameras while recording"))
+            return
+        }
+        viewModelScope.launch {
+            try {
+                camera.switchFacing()
+            } catch (e: Exception) {
+                Log.e(TAG, "switchCamera failed", e)
+                _ui.update { it.copy(lastEvent = "Camera switch failed: ${e.message}") }
+            }
+            refreshCameraUi()
+            sendState()
         }
     }
 
@@ -246,10 +320,14 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun takePhoto(fromRemote: Boolean) {
-        val started = System.currentTimeMillis()
+        val queuedAt = System.currentTimeMillis()
         try {
-            val uri = camera.takePhoto(store.newPhotoOutput())
+            val (uri, started) = captureQueue.withLock {
+                val started = System.currentTimeMillis()
+                camera.takePhoto(store.newPhotoOutput()) to started
+            }
             val elapsed = System.currentTimeMillis() - started
+            if (started - queuedAt > 50) Log.i(TAG, "Photo waited ${started - queuedAt}ms in the queue")
             Log.i(TAG, "Photo saved in ${elapsed}ms (remote=$fromRemote)")
             _ui.update { it.copy(lastEvent = "Photo saved in ${elapsed}ms") }
             send(Response.PhotoTaken(success = true))
@@ -271,13 +349,36 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
         sendState()
     }
 
-    /** The phone's own shutter: a photo, or start/stop in video mode. */
+    /**
+     * The phone's own shutter and the volume keys: a photo (after the
+     * self-timer, if set), or start/stop in video mode. Pressing during a
+     * countdown cancels it. Photos from the remote skip the timer, as before.
+     */
     fun shutterFromUi() {
         when {
+            countdownJob?.isActive == true -> cancelCountdown()
             _ui.value.isRecording -> stopRecording()
             _ui.value.captureMode == CaptureMode.VIDEO -> requestStartRecording()
+            settings.value.timer.seconds > 0 -> startCountdown(settings.value.timer.seconds)
             else -> takePhotoFromUi()
         }
+    }
+
+    private fun startCountdown(seconds: Int) {
+        countdownJob = viewModelScope.launch {
+            for (left in seconds downTo 1) {
+                _ui.update { it.copy(countdown = left) }
+                delay(1000)
+            }
+            _ui.update { it.copy(countdown = null) }
+            takePhoto(fromRemote = false)
+        }
+    }
+
+    private fun cancelCountdown() {
+        countdownJob?.cancel()
+        countdownJob = null
+        _ui.update { it.copy(countdown = null) }
     }
 
     private fun requestStartRecording() {
@@ -313,6 +414,8 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
         // Recording means the camera is in video mode; tell the remote so its
         // shutter becomes a stop button.
         _ui.update { it.copy(captureMode = CaptureMode.VIDEO) }
+        // Video has no flash; "on" or "auto" means the torch, as in the RN app.
+        if (settings.value.flash != FlashMode.OFF) camera.setTorch(true)
         try {
             recording = camera.startRecording(store.newVideoOutput(), withAudio, ::onRecordEvent)
         } catch (e: Exception) {
@@ -339,6 +442,7 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
             }
             is VideoRecordEvent.Finalize -> {
                 recording = null
+                camera.setTorch(false)
                 val stats = event.recordingStats
                 val seconds = stats.recordedDurationNanos / 1_000_000_000
                 val megabytes = stats.numBytesRecorded / 1_000_000
@@ -376,12 +480,12 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                 state = CameraState(
                     zoom = zoom.toDouble(),
                     flash = settings.value.flash,
-                    facing = CameraFacing.BACK,
+                    facing = camera.facing,
                     captureMode = _ui.value.captureMode,
                     isRecording = _ui.value.isRecording,
                     streamMode = StreamMode.WEBRTC,
                 ),
-                lenses = Lenses.toLensInfo(camera.lenses(), zoom),
+                lenses = Lenses.toLensInfo(camera.backLenses(), zoom, camera.facing, camera.hasFrontCamera),
                 videoNeedsRotation = false,
                 previewZoomLimited = false,
                 streamMode = StreamMode.WEBRTC,
@@ -424,6 +528,7 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        orientationListener.disable()
         recording?.stop()
         teardownSession()
         camera.release()

@@ -9,8 +9,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +29,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.secondshooter.nativepoc.settings.AppSettings
+import com.secondshooter.nativepoc.settings.AspectRatioSetting
+import com.secondshooter.nativepoc.settings.GridOverlay
+import com.secondshooter.nativepoc.settings.TimerDuration
 import com.secondshooter.nativepoc.settings.SettingsRepository
 import com.secondshooter.nativepoc.settings.settingsDataStore
 import kotlinx.coroutines.flow.SharingStarted
@@ -44,18 +50,45 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
-/** Phase 1 has only the settings that already do something; Phase 6 adds the rest. */
+/** The settings that do something so far; Phase 6 adds the rest and the polish. */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     Surface(Modifier.fillMaxSize()) {
-        Column(Modifier.safeDrawingPadding()) {
+        Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState())) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                 }
                 Text("Settings", style = MaterialTheme.typography.titleLarge)
             }
+            ChoiceRow(
+                title = "Self-timer",
+                options = TimerDuration.entries,
+                selected = settings.timer,
+                label = { if (it == TimerDuration.OFF) "Off" else "${it.seconds}s" },
+                onSelect = { v -> viewModel.update { it.copy(timer = v) } },
+            )
+            ChoiceRow(
+                title = "Grid",
+                options = GridOverlay.entries,
+                selected = settings.gridOverlay,
+                label = { if (it == GridOverlay.NONE) "None" else it.wire },
+                onSelect = { v -> viewModel.update { it.copy(gridOverlay = v) } },
+            )
+            ChoiceRow(
+                title = "Photo framing",
+                subtitle = "Masks the viewfinder; the photo itself is always 4:3",
+                options = AspectRatioSetting.entries,
+                selected = settings.aspectRatio,
+                label = { it.wire },
+                onSelect = { v -> viewModel.update { it.copy(aspectRatio = v) } },
+            )
+            ToggleRow(
+                title = "Volume keys take photos",
+                checked = settings.volumeShutter,
+                onChange = { on -> viewModel.update { it.copy(volumeShutter = on) } },
+            )
             ToggleRow(
                 title = "Keep screen awake",
                 checked = settings.keepScreenAwake,
@@ -86,5 +119,29 @@ private fun ToggleRow(title: String, checked: Boolean, onChange: (Boolean) -> Un
             subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         }
         Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+@Composable
+private fun <T> ChoiceRow(
+    title: String,
+    options: List<T>,
+    selected: T,
+    label: (T) -> String,
+    onSelect: (T) -> Unit,
+    subtitle: String? = null,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Text(title, style = MaterialTheme.typography.bodyLarge)
+        subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { option ->
+                FilterChip(
+                    selected = option == selected,
+                    onClick = { onSelect(option) },
+                    label = { Text(label(option)) },
+                )
+            }
+        }
     }
 }

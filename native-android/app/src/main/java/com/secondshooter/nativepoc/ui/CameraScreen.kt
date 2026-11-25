@@ -51,6 +51,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.secondshooter.nativepoc.camera.Lenses
+import com.secondshooter.nativepoc.MainActivity
+import com.secondshooter.nativepoc.protocol.CameraFacing
 import com.secondshooter.nativepoc.protocol.CaptureMode
 import com.secondshooter.nativepoc.session.CameraSessionViewModel
 import com.secondshooter.nativepoc.signaling.SessionIds
@@ -88,6 +90,14 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
         if (micPermissionRequest) requestMic.launch(Manifest.permission.RECORD_AUDIO)
     }
 
+    // Volume keys as a shutter, while this screen is showing. The activity
+    // owns key events; it hands them here.
+    val activity = context as? MainActivity
+    DisposableEffect(activity, settings.volumeShutter) {
+        activity?.volumeKeyListener = if (settings.volumeShutter) viewModel::shutterFromUi else null
+        onDispose { activity?.volumeKeyListener = null }
+    }
+
     val view = LocalView.current
     DisposableEffect(settings.keepScreenAwake) {
         view.keepScreenOn = settings.keepScreenAwake
@@ -98,21 +108,33 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
         // SurfaceViewRenderer crops frames to its own aspect ratio, so give it
         // the stream's 3:4 rather than the screen's, or the viewfinder shows
         // less than the photo will.
-        AndroidView(
-            modifier = Modifier.align(Alignment.Center).fillMaxWidth().aspectRatio(3f / 4f),
-            factory = { ctx ->
-                SurfaceViewRenderer(ctx).apply {
-                    init(viewModel.eglBase.eglBaseContext, null)
-                    setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-                    setEnableHardwareScaler(true)
-                    viewModel.videoTrack.addSink(this)
-                }
-            },
-            onRelease = { renderer ->
-                runCatching { viewModel.videoTrack.removeSink(renderer) }
-                renderer.release()
-            },
-        )
+        Box(Modifier.align(Alignment.Center).fillMaxWidth().aspectRatio(3f / 4f)) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    SurfaceViewRenderer(ctx).apply {
+                        init(viewModel.eglBase.eglBaseContext, null)
+                        setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+                        setEnableHardwareScaler(true)
+                        viewModel.videoTrack.addSink(this)
+                    }
+                },
+                // The track carries the camera's true image; the front camera
+                // is shown mirrored, like a mirror, as every camera app does.
+                update = { renderer -> renderer.setMirror(ui.facing == CameraFacing.FRONT) },
+                onRelease = { renderer ->
+                    runCatching { viewModel.videoTrack.removeSink(renderer) }
+                    renderer.release()
+                },
+            )
+            ViewfinderOverlay(
+                mode = ui.captureMode,
+                aspectRatio = settings.aspectRatio,
+                grid = settings.gridOverlay,
+                countdown = ui.countdown,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
 
         Row(
             Modifier
@@ -159,7 +181,18 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
                 Button(onClick = viewModel::startSession) { Text("New session") }
                 Spacer(Modifier.height(12.dp))
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Chip("Flash ${settings.flash.wire}", onClick = viewModel::cycleFlashFromUi)
+                if (ui.hasFrontCamera) {
+                    Chip(
+                        if (ui.facing == CameraFacing.FRONT) "Back" else "Selfie",
+                        enabled = !ui.isRecording,
+                        onClick = viewModel::switchCamera,
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            if (ui.facing == CameraFacing.BACK) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 ui.lenses.forEach { lens ->
                     val active = Lenses.isActive(ui.zoom, lens.zoom)
                     Box(
@@ -264,4 +297,18 @@ private fun Shutter(mode: CaptureMode, recording: Boolean, onClick: () -> Unit) 
             else -> Box(Modifier.size(56.dp).clip(CircleShape).background(Color.White))
         }
     }
+}
+
+@Composable
+private fun Chip(label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    Text(
+        label,
+        color = if (enabled) Color.White else Color(0x80FFFFFF),
+        fontSize = 13.sp,
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(Color(0x99000000))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+    )
 }
