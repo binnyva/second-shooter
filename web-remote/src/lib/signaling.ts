@@ -54,6 +54,34 @@ export class BrowserSignalingClient {
     return true;
   }
 
+  /**
+   * Takes over a session another remote has already answered.
+   *
+   * The camera makes one offer per connection, so the offer sitting in a
+   * `connected` session belongs to someone else's connection (or to this
+   * page before a reload). Answering it can only be rejected. Instead, mark
+   * it as seen and set the status back to `waiting`: the camera answers that
+   * with a fresh offer for a new connection, which onOffer then picks up.
+   *
+   * Cameras that predate this (the React Native app) ignore the request, and
+   * the remote waits as it did before.
+   */
+  async claimSession(): Promise<void> {
+    if (!this.sessionId) {
+      throw new Error('No active session');
+    }
+
+    const sessionRef = doc(this.db, SESSIONS_COLLECTION, this.sessionId);
+    const snapshot = await getDoc(sessionRef);
+    const data = snapshot.data();
+    if (data?.status !== 'connected' || !data.offer?.sdp) {
+      return;
+    }
+
+    this.processedOfferSdp = data.offer.sdp;
+    await setDoc(sessionRef, { status: 'waiting' }, { merge: true });
+  }
+
   async sendAnswer(answer: SignalingAnswer): Promise<void> {
     if (!this.sessionId) {
       throw new Error('No active session');

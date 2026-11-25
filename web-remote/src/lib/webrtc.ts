@@ -153,6 +153,23 @@ export class BrowserWebRTCClient {
     return answer;
   }
 
+  /**
+   * True when an offer comes from a different camera connection than the
+   * one this remote is talking to: a fresh one the camera made for another
+   * remote that took over the session. An ICE-restart offer keeps the same
+   * DTLS fingerprint; a new connection has a new one.
+   */
+  isOfferForAnotherConnection(offerSdp: string): boolean {
+    const current = this.peerConnection?.remoteDescription?.sdp;
+    if (!current) {
+      return false;
+    }
+    const fingerprint = (sdp: string) => sdp.match(/^a=fingerprint:(.+)$/m)?.[1]?.trim() ?? null;
+    const before = fingerprint(current);
+    const after = fingerprint(offerSdp);
+    return before !== null && after !== null && before !== after;
+  }
+
   async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
     if (!this.peerConnection) {
       throw new Error('Peer connection not initialized');

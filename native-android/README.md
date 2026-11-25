@@ -32,6 +32,15 @@ Source is in `app/src/main/java/com/secondshooter/nativepoc/`:
   Firestore session and the peer connection, and answers the remote's
   commands. Being a ViewModel, it survives activity recreation; the camera is
   re-bound to each new lifecycle and keeps its zoom.
+- `session/CameraSessionService.kt`: a foreground service (camera, plus
+  microphone once granted) that the camera binds to instead of the screen. The
+  session keeps streaming with the screen off or the app in the background;
+  backing out of the app ends it.
+- Reconnection (`CameraSessionViewModel`): a dropped connection is renegotiated
+  with an ICE restart after a 3s grace period, every 5s, up to 12 times, as in
+  the RN app. A remote that joins an already-answered session (a reload, a
+  second device) asks for a fresh offer by setting the status to `waiting`, and
+  gets a new peer connection on the same session.
 - `signaling/`: same Firestore layout as `src/services/SignalingService.ts`.
   The phone is the offerer and creates the `camera-commands` data channel.
   Firebase is configured in code from the repo's `.env` (`EXPO_PUBLIC_FIREBASE_*`,

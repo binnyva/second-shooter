@@ -105,7 +105,13 @@ class RtcSession(
             .onFailure { Log.w(TAG, "setCodecPreferences failed", it) }
     }
 
-    suspend fun createOffer(): String {
+    /**
+     * @param iceRestart new ICE credentials on the same connection: the data
+     *   channel and media carry over (SCTP survives an ICE restart), so the
+     *   remote reconnects without re-pairing.
+     */
+    suspend fun createOffer(iceRestart: Boolean = false): String {
+        if (iceRestart) peerConnection.restartIce()
         val offer = suspendCancellableCoroutine { cont ->
             peerConnection.createOffer(object : SdpObserverAdapter() {
                 override fun onCreateSuccess(sdp: SessionDescription) = cont.resume(sdp)
@@ -117,13 +123,19 @@ class RtcSession(
         return offer.description
     }
 
-    suspend fun setAnswer(sdp: String) {
+    /** False (and nothing applied) when no offer of ours is waiting for an answer. */
+    suspend fun setAnswer(sdp: String): Boolean {
+        if (peerConnection.signalingState() != PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+            Log.w(TAG, "Ignoring an answer in state ${peerConnection.signalingState()}")
+            return false
+        }
         setDescription(local = false, SessionDescription(SessionDescription.Type.ANSWER, sdp))
         val queued = synchronized(pendingRemoteCandidates) {
             hasRemoteDescription = true
             pendingRemoteCandidates.toList().also { pendingRemoteCandidates.clear() }
         }
         queued.forEach { peerConnection.addIceCandidate(it) }
+        return true
     }
 
     /** The remote's candidates can arrive before its answer; queue those. */

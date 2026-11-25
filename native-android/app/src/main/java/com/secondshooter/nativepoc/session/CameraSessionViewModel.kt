@@ -37,6 +37,7 @@ import com.secondshooter.nativepoc.settings.settingsDataStore
 import com.secondshooter.nativepoc.signaling.FirebaseSetup
 import com.secondshooter.nativepoc.signaling.SessionIds
 import com.secondshooter.nativepoc.signaling.Signaling
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -46,6 +47,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.map
@@ -119,7 +122,11 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     private var rtc: RtcSession? = null
     private val statsTracker = StatsTracker()
     private var firstBind = true
+    private var serviceStarted = false
     private var sessionJob: Job? = null
+    private var reconnectJob: Job? = null
+    /** The current connection's offer is in Firestore (so a "waiting" status is a remote's request). */
+    private var offerSent = false
 
     private var recording: Recording? = null
     private var videoTarget: VideoTarget? = null
@@ -161,11 +168,19 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Call with each lifecycle the camera should follow (after permission is granted). */
-    fun bindCamera(owner: LifecycleOwner) {
+    /**
+     * Call once the camera permission is granted. Starts the foreground
+     * service and binds the camera to its lifecycle, not the screen's, so
+     * the session outlives screen-off and config changes. Safe to repeat.
+     */
+    fun onCameraPermissionGranted() {
+        if (serviceStarted) return
+        serviceStarted = true
+        CameraSessionService.start(getApplication())
         viewModelScope.launch {
+            val service = CameraSessionService.running.filterNotNull().first()
             try {
-                camera.bind(owner)
+                camera.bind(service)
                 if (firstBind) {
                     firstBind = false
                     camera.setZoom(INITIAL_ZOOM)
@@ -192,25 +207,26 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                 signaling = sig
                 sig.create()
 
-                val ice = IceServers.fetch()
-                val session = RtcSession(engine.factory, camera.videoTrack, ice.servers, rtcListener(sig))
-                rtc = session
-
-                sig.sendOffer(session.createOffer())
+                // Answers and candidates go to whichever connection is current.
                 sig.onAnswer { sdp ->
+                    val session = rtc ?: return@onAnswer
                     viewModelScope.launch {
                         runCatching { session.setAnswer(sdp) }
                             .onFailure { Log.e(TAG, "setAnswer failed", it) }
                     }
                 }
-                sig.onAnswerCandidate { session.addRemoteCandidate(it) }
-
-                _ui.update {
-                    it.copy(
-                        sessionId = sig.sessionId,
-                        status = "Waiting for remote" + if (ice.hasTurn) "" else " (no TURN, STUN only)",
-                    )
+                sig.onAnswerCandidate { rtc?.addRemoteCandidate(it) }
+                sig.onStatus { status ->
+                    // A remote found the session already answered and wants
+                    // a connection of its own (reload, second device).
+                    if (status == "waiting" && offerSent && signaling === sig) {
+                        Log.i(TAG, "A remote asked for a fresh offer; starting a new connection")
+                        viewModelScope.launch { connectPeer(sig) }
+                    }
                 }
+
+                connectPeer(sig)
+                _ui.update { it.copy(sessionId = sig.sessionId) }
             } catch (e: Exception) {
                 Log.e(TAG, "Session setup failed", e)
                 _ui.update { it.copy(status = "Setup failed: ${e.message}", canRestart = true) }
@@ -218,9 +234,68 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun rtcListener(sig: Signaling) = object : RtcSession.Listener {
+    /**
+     * A new peer connection on the current session, replacing any previous
+     * one: the first remote, or a remote taking over. The video track is
+     * reused, so the camera doesn't notice.
+     */
+    private suspend fun connectPeer(sig: Signaling) {
+        reconnectJob?.cancel()
+        rtc?.close()
+        rtc = null
+        offerSent = false
+        statsTracker.reset()
+        _ui.update { it.copy(connected = false, canRestart = false, status = "Waiting for remote") }
+
+        val ice = IceServers.fetch()
+        if (signaling !== sig) return
+        var self: RtcSession? = null
+        val session = RtcSession(engine.factory, camera.videoTrack, ice.servers, rtcListener(sig) { self })
+        self = session
+        rtc = session
+
+        sig.sendOffer(session.createOffer())
+        offerSent = true
+        _ui.update {
+            it.copy(status = "Waiting for remote" + if (ice.hasTurn) "" else " (no TURN, STUN only)")
+        }
+    }
+
+    /**
+     * After a drop, renegotiate with an ICE restart on the same connection,
+     * paced as in the RN app: a grace period (short drops recover on their
+     * own), then a fresh offer every few seconds. The data channel survives,
+     * so the remote picks up where it left off without re-pairing.
+     */
+    private fun startReconnect(sig: Signaling, session: RtcSession) {
+        if (reconnectJob?.isActive == true) return
+        reconnectJob = viewModelScope.launch {
+            delay(RECONNECT_GRACE_MS)
+            repeat(RECONNECT_MAX_ATTEMPTS) { attempt ->
+                if (rtc !== session || signaling !== sig || _ui.value.connected) return@launch
+                try {
+                    sig.sendOffer(session.createOffer(iceRestart = true))
+                    Log.i(TAG, "Sent ICE-restart offer (attempt ${attempt + 1})")
+                } catch (e: CancellationException) {
+                    throw e // reconnected meanwhile
+                } catch (e: Exception) {
+                    Log.w(TAG, "Reconnect attempt ${attempt + 1} failed", e)
+                }
+                delay(RECONNECT_RETRY_MS)
+            }
+            if (rtc === session && !_ui.value.connected) {
+                Log.i(TAG, "Remote didn't come back; waiting for one to join")
+                _ui.update { it.copy(status = "Remote gone. Scan to reconnect", canRestart = true) }
+            }
+        }
+    }
+
+    private fun rtcListener(sig: Signaling, self: () -> RtcSession?) = object : RtcSession.Listener {
+        private fun isCurrent() = signaling === sig && rtc != null && rtc === self()
+
         override fun onLocalCandidate(candidate: IceCandidate) {
             viewModelScope.launch {
+                if (!isCurrent()) return@launch
                 runCatching { sig.addOfferCandidate(candidate) }
                     .onFailure { Log.w(TAG, "Failed to send ICE candidate", it) }
             }
@@ -228,25 +303,23 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
 
         override fun onConnectionState(state: PeerConnection.PeerConnectionState) {
             viewModelScope.launch(Dispatchers.Main) {
-                if (signaling !== sig) return@launch
+                if (!isCurrent()) return@launch
                 Log.i(TAG, "Connection state: $state")
-                _ui.update { ui ->
-                    when (state) {
-                        PeerConnection.PeerConnectionState.CONNECTED ->
-                            ui.copy(status = "Connected", connected = true, canRestart = false)
-                        PeerConnection.PeerConnectionState.CONNECTING ->
-                            ui.copy(status = "Connecting…")
-                        PeerConnection.PeerConnectionState.DISCONNECTED ->
-                            ui.copy(status = "Disconnected", connected = false, canRestart = true)
-                        PeerConnection.PeerConnectionState.FAILED,
-                        PeerConnection.PeerConnectionState.CLOSED ->
-                            ui.copy(
-                                status = "Connection ${state.name.lowercase()}",
-                                connected = false,
-                                canRestart = true,
-                            )
-                        else -> ui
+                when (state) {
+                    PeerConnection.PeerConnectionState.CONNECTED -> {
+                        reconnectJob?.cancel()
+                        _ui.update { it.copy(status = "Connected", connected = true, canRestart = false) }
                     }
+                    PeerConnection.PeerConnectionState.CONNECTING ->
+                        _ui.update { it.copy(status = if (it.connected) "Reconnecting…" else "Connecting…") }
+                    PeerConnection.PeerConnectionState.DISCONNECTED,
+                    PeerConnection.PeerConnectionState.FAILED -> {
+                        _ui.update { it.copy(status = "Reconnecting…", connected = false) }
+                        self()?.let { startReconnect(sig, it) }
+                    }
+                    PeerConnection.PeerConnectionState.CLOSED ->
+                        _ui.update { it.copy(status = "Connection closed", connected = false, canRestart = true) }
+                    else -> Unit
                 }
             }
         }
@@ -258,7 +331,7 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
         override fun onMessage(text: String) {
             val decoded = Protocol.decodeCommand(text) ?: return
             viewModelScope.launch(Dispatchers.Main) {
-                if (signaling !== sig) return@launch
+                if (!isCurrent()) return@launch
                 when (decoded) {
                     is DecodedCommand.Known -> handle(decoded.command)
                     is DecodedCommand.Unknown -> send(Response.ErrorMessage("Unknown command ${decoded.type}"))
@@ -435,6 +508,9 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onMicPermissionResult(granted: Boolean) {
         _micPermissionRequest.value = false
+        // Claim the microphone service type, so recordings keep their sound
+        // with the screen off.
+        if (granted) CameraSessionService.running.value?.goForeground()
         if (startPendingOnMic) {
             startPendingOnMic = false
             startRecording(withAudio = granted)
@@ -565,6 +641,8 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun teardownSession() {
+        reconnectJob?.cancel()
+        offerSent = false
         rtc?.close()
         rtc = null
         signaling?.close()
@@ -573,6 +651,7 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        CameraSessionService.stop(getApplication())
         orientationListener.disable()
         recording?.stop()
         teardownSession()
@@ -583,5 +662,10 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val TAG = "SSSession"
         private const val STATS_TAG = "SSStats"
+
+        // Same pacing as app/index.tsx.
+        private const val RECONNECT_GRACE_MS = 3000L
+        private const val RECONNECT_RETRY_MS = 5000L
+        private const val RECONNECT_MAX_ATTEMPTS = 12
     }
 }

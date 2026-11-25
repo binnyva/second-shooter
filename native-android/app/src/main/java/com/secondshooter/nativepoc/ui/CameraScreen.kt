@@ -53,7 +53,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.secondshooter.nativepoc.camera.Lenses
 import com.secondshooter.nativepoc.MainActivity
@@ -70,7 +69,6 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
     val lastPhoto by viewModel.lastPhoto.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
 
     var hasCamera by remember {
         mutableStateOf(
@@ -82,8 +80,8 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
         ActivityResultContracts.RequestPermission()
     ) { granted -> hasCamera = granted }
 
-    LaunchedEffect(hasCamera, lifecycleOwner) {
-        if (hasCamera) viewModel.bindCamera(lifecycleOwner)
+    LaunchedEffect(hasCamera) {
+        if (hasCamera) viewModel.onCameraPermissionGranted()
         else requestCamera.launch(Manifest.permission.CAMERA)
     }
 
@@ -164,9 +162,7 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
                 }
                 ui.lastEvent?.let { Text(it, color = Color(0xFFFFE08A), fontSize = 12.sp) }
             }
-            // Leaving the camera screen stops the camera, which would end a
-            // recording; settings wait until it's done.
-            IconButton(onClick = onOpenSettings, enabled = !ui.isRecording) {
+            IconButton(onClick = onOpenSettings) {
                 Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = Color.White)
             }
         }

@@ -64,6 +64,25 @@ class Signaling(val sessionId: String) {
         }
     }
 
+    /**
+     * Session status changes. A remote that finds the session already
+     * `connected` sets it back to `waiting` to ask for a fresh offer (see
+     * claimSession in web-remote/src/lib/signaling.ts).
+     */
+    fun onStatus(callback: (String) -> Unit) {
+        var lastStatus: String? = null
+        listeners += sessionRef.addSnapshotListener { snapshot, _ ->
+            val status = snapshot?.getString("status") ?: return@addSnapshotListener
+            // Our own pending writes echo back first; only act on what the
+            // server has.
+            if (snapshot.metadata.hasPendingWrites()) return@addSnapshotListener
+            if (status != lastStatus) {
+                lastStatus = status
+                callback(status)
+            }
+        }
+    }
+
     fun onAnswerCandidate(callback: (IceCandidate) -> Unit) {
         listeners += sessionRef.collection("answerCandidates").addSnapshotListener { snapshot, _ ->
             snapshot?.documentChanges

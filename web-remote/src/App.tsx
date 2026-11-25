@@ -309,7 +309,27 @@ export default function App() {
         }
       });
 
+      // A session another remote already answered needs a fresh offer.
+      try {
+        await signaling.claimSession();
+      } catch (error) {
+        console.warn('Failed to claim the session', error);
+      }
+      if (isCancelled) {
+        return;
+      }
+
       signaling.onOffer(async (offer) => {
+        if (rtc.isOfferForAnotherConnection(offer.sdp)) {
+          // Another remote opened this session, and the camera has moved on.
+          if (!isCancelled) {
+            // close() reports 'disconnected'; set the final state after it.
+            rtc.close();
+            setConnectionState('failed');
+            setErrorMessage('Another remote has taken over this session.');
+          }
+          return;
+        }
         try {
           await rtc.setRemoteDescription({ type: 'offer', sdp: offer.sdp });
           const answer = await rtc.createAnswer();
