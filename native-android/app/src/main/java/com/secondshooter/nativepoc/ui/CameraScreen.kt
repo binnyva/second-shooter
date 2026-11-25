@@ -39,6 +39,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.Image
+import android.graphics.Bitmap
+import com.secondshooter.nativepoc.media.GalleryApps
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalView
@@ -62,6 +67,7 @@ import org.webrtc.SurfaceViewRenderer
 @Composable
 fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
+    val lastPhoto by viewModel.lastPhoto.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -228,7 +234,12 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
                 )
                 Spacer(Modifier.height(8.dp))
             }
-            Box(contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                LastPhotoButton(
+                    photo = lastPhoto,
+                    onClick = { GalleryApps.open(context, settings.galleryApp) },
+                    modifier = Modifier.align(Alignment.CenterStart).padding(start = 32.dp),
+                )
                 Shutter(
                     mode = ui.captureMode,
                     recording = ui.isRecording,
@@ -240,7 +251,8 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
                     // so this is the only way to ask for one.
                     Box(
                         Modifier
-                            .padding(start = 150.dp)
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 40.dp)
                             .size(44.dp)
                             .border(3.dp, Color.White, CircleShape)
                             .padding(6.dp)
@@ -311,4 +323,26 @@ private fun Chip(label: String, enabled: Boolean = true, onClick: () -> Unit) {
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 8.dp),
     )
+}
+
+@Composable
+private fun LastPhotoButton(photo: Bitmap?, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(52.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .border(2.dp, Color.White, RoundedCornerShape(10.dp))
+            .background(Color(0x99000000))
+            .semantics { contentDescription = "Open the gallery" }
+            .clickable(onClick = onClick),
+    ) {
+        if (photo != null) {
+            Image(
+                photo.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
 }

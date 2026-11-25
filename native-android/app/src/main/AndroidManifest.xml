@@ -9,6 +9,21 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Lets GalleryApps see installed galleries on Android 11+. Must stay in
+         step with GalleryApps.queryIntents(): an undeclared query returns an
+         empty list rather than failing, which looks like "no gallery apps".
+         Deliberately narrow: no MAIN/LAUNCHER and no QUERY_ALL_PACKAGES. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.APP_GALLERY" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="image/*" />
+        </intent>
+    </queries>
+
     <application
         android:label="SS Native Test"
         android:theme="@android:style/Theme.Material.NoActionBar">

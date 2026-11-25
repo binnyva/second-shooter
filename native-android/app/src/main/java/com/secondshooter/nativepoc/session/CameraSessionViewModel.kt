@@ -3,6 +3,7 @@ package com.secondshooter.nativepoc.session
 import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.view.OrientationEventListener
 import android.util.Log
 import androidx.camera.video.Recording
@@ -17,6 +18,7 @@ import com.secondshooter.nativepoc.camera.Lenses
 import com.secondshooter.nativepoc.camera.captureRotationFor
 import com.secondshooter.nativepoc.protocol.FlashMode
 import com.secondshooter.nativepoc.media.CaptureStore
+import com.secondshooter.nativepoc.media.VideoTarget
 import com.secondshooter.nativepoc.protocol.CameraFacing
 import com.secondshooter.nativepoc.protocol.CameraState
 import com.secondshooter.nativepoc.protocol.CaptureMode
@@ -36,6 +38,7 @@ import com.secondshooter.nativepoc.signaling.FirebaseSetup
 import com.secondshooter.nativepoc.signaling.SessionIds
 import com.secondshooter.nativepoc.signaling.Signaling
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +46,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -88,7 +93,7 @@ const val INITIAL_ZOOM = 2f
 class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     private val engine = WebRtcEngine(app)
     private val camera = CameraStreamer(app, engine.eglBase, engine.factory)
-    private val store = CaptureStore(app)
+    private val store = CaptureStore(app, app.settingsDataStore)
     private val settingsRepository = SettingsRepository(app.settingsDataStore)
 
     val eglBase: EglBase get() = engine.eglBase
@@ -96,6 +101,16 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
 
     val settings: StateFlow<AppSettings> = settingsRepository.settings
         .stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings())
+
+    /** The shutter thumbnail: the newest photo saved to the current destination. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val lastPhoto: StateFlow<Bitmap?> = settings
+        .map { it.saveFolderUri }
+        .distinctUntilChanged()
+        .flatMapLatest { folder -> store.lastPhoto(folder) }
+        .distinctUntilChanged()
+        .mapLatest { uri -> uri?.let { store.loadThumbnail(it) } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     private val _ui = MutableStateFlow(CameraUiState())
     val ui: StateFlow<CameraUiState> = _ui.asStateFlow()
@@ -107,6 +122,8 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     private var sessionJob: Job? = null
 
     private var recording: Recording? = null
+    private var videoTarget: VideoTarget? = null
+    private var startingRecording = false
     /** A start that's waiting on the microphone prompt. */
     private var startPendingOnMic = false
     private var askedForMic = false
@@ -322,14 +339,28 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun takePhoto(fromRemote: Boolean) {
         val queuedAt = System.currentTimeMillis()
         try {
-            val (uri, started) = captureQueue.withLock {
+            // Capture and save both happen inside the queue, so a burst lands
+            // in the folder in the order it was shot.
+            val (saved, started) = captureQueue.withLock {
                 val started = System.currentTimeMillis()
-                camera.takePhoto(store.newPhotoOutput()) to started
+                val (options, temp) = store.newPhotoCapture()
+                camera.takePhoto(options)
+                store.savePhoto(temp, settings.value.saveFolderUri) to started
             }
+            val uri = saved.uri
             val elapsed = System.currentTimeMillis() - started
             if (started - queuedAt > 50) Log.i(TAG, "Photo waited ${started - queuedAt}ms in the queue")
-            Log.i(TAG, "Photo saved in ${elapsed}ms (remote=$fromRemote)")
-            _ui.update { it.copy(lastEvent = "Photo saved in ${elapsed}ms") }
+            val where = if (saved.inFolder) "folder" else "camera roll"
+            Log.i(TAG, "Photo saved to $where in ${elapsed}ms (remote=$fromRemote)")
+            _ui.update {
+                it.copy(
+                    lastEvent = if (!saved.inFolder && settings.value.saveFolderUri != null) {
+                        "Couldn't write to the folder; saved to the camera roll"
+                    } else {
+                        "Photo saved in ${elapsed}ms"
+                    }
+                )
+            }
             send(Response.PhotoTaken(success = true))
             if (rtc != null) {
                 val thumb = store.thumbnailBase64(uri)
@@ -382,7 +413,7 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun requestStartRecording() {
-        if (recording != null || startPendingOnMic) return
+        if (recording != null || startPendingOnMic || startingRecording) return
         if (!camera.videoSupported) {
             send(Response.ErrorMessage("This camera can't record video while streaming"))
             return
@@ -411,21 +442,33 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun startRecording(withAudio: Boolean) {
+        startingRecording = true
         // Recording means the camera is in video mode; tell the remote so its
         // shutter becomes a stop button.
         _ui.update { it.copy(captureMode = CaptureMode.VIDEO) }
-        // Video has no flash; "on" or "auto" means the torch, as in the RN app.
-        if (settings.value.flash != FlashMode.OFF) camera.setTorch(true)
-        try {
-            recording = camera.startRecording(store.newVideoOutput(), withAudio, ::onRecordEvent)
-        } catch (e: Exception) {
-            Log.e(TAG, "startRecording failed", e)
-            recording = null
-            _ui.update { it.copy(lastEvent = "Recording failed: ${e.message}") }
-            send(Response.ErrorMessage("Couldn't start recording: ${e.message}"))
-            sendState()
+        viewModelScope.launch {
+            val target = store.newVideoTarget(settings.value.saveFolderUri)
+            // Video has no flash; "on" or "auto" means the torch, as in the RN app.
+            if (settings.value.flash != FlashMode.OFF) camera.setTorch(true)
+            try {
+                videoTarget = target
+                recording = camera.startRecording(target.options, withAudio, ::onRecordEvent)
+                if (!withAudio) {
+                    _ui.update { it.copy(lastEvent = "Recording without sound (microphone not allowed)") }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "startRecording failed", e)
+                recording = null
+                videoTarget = null
+                target.close()
+                camera.setTorch(false)
+                _ui.update { it.copy(lastEvent = "Recording failed: ${e.message}") }
+                send(Response.ErrorMessage("Couldn't start recording: ${e.message}"))
+                sendState()
+            } finally {
+                startingRecording = false
+            }
         }
-        if (!withAudio) _ui.update { it.copy(lastEvent = "Recording without sound (microphone not allowed)") }
     }
 
     private fun onRecordEvent(event: VideoRecordEvent) {
@@ -442,6 +485,8 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
             }
             is VideoRecordEvent.Finalize -> {
                 recording = null
+                videoTarget?.close()
+                videoTarget = null
                 camera.setTorch(false)
                 val stats = event.recordingStats
                 val seconds = stats.recordedDurationNanos / 1_000_000_000

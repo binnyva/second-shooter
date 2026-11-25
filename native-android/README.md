@@ -42,8 +42,15 @@ Source is in `app/src/main/java/com/secondshooter/nativepoc/`:
   kotlinx.serialization. `shared/protocol.ts` is the source of truth; see
   "Protocol checks" below.
 - `settings/`: DataStore, with the React Native app's keys and defaults.
-- `media/CaptureStore.kt`: photos go to `Pictures/SecondShooter`, videos to
-  `Movies/SecondShooter`.
+- `media/`: where captures go. `CaptureStore` writes to the folder chosen in
+  Settings (a Storage Access Framework tree) through a ContentResolver stream,
+  and falls back to the camera roll (`Pictures/SecondShooter`,
+  `Movies/SecondShooter`) when there's no folder or a write fails. Photos are
+  captured to a cache file and then copied, so a failing folder never loses a
+  shot. It never lists the folder: the shutter thumbnail and the broken-folder
+  warning come from what the last save did (see "Save Folder" in AGENTS.md).
+  `GalleryApps` is `modules/gallery-apps` without the Expo wrapper; its
+  `<queries>` block is in this app's manifest.
 - `ui/`: Compose screens (camera, settings) under Navigation Compose. The
   viewfinder overlay draws the photo framing mask, the grid, the 16:9 video
   frame and the self-timer. Volume keys reach the camera screen through

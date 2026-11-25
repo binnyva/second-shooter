@@ -23,7 +23,10 @@ import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
+import androidx.camera.video.FileDescriptorOutputOptions
+import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.MediaStoreOutputOptions
+import androidx.camera.video.OutputOptions
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.Recorder
@@ -360,12 +363,17 @@ class CameraStreamer(
     /** Starts recording; [onEvent] gets CameraX's Start/Status/Finalize events on the main thread. */
     @SuppressLint("MissingPermission") // withAudio is only true once RECORD_AUDIO is granted
     fun startRecording(
-        output: MediaStoreOutputOptions,
+        output: OutputOptions,
         withAudio: Boolean,
         onEvent: (VideoRecordEvent) -> Unit,
     ): Recording {
         check(videoSupported) { "Video isn't supported on this camera" }
-        var pending = recorder.prepareRecording(context, output)
+        var pending = when (output) {
+            is MediaStoreOutputOptions -> recorder.prepareRecording(context, output)
+            is FileDescriptorOutputOptions -> recorder.prepareRecording(context, output)
+            is FileOutputOptions -> recorder.prepareRecording(context, output)
+            else -> error("Unsupported output: $output")
+        }
         if (withAudio) pending = pending.withAudioEnabled()
         return pending.start(mainExecutor) { onEvent(it) }
     }
