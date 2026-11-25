@@ -29,16 +29,23 @@ fun firebaseField(name: String): String {
     return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 }
 
+// For trying a release build next to the installed app:
+// ./gradlew installRelease -PappIdSuffix=.preview
+val appIdSuffix = (findProperty("appIdSuffix") as String?).orEmpty()
+
 android {
-    namespace = "com.secondshooter.nativepoc"
+    namespace = "com.secondshooter.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.secondshooter.nativepoc"
+        // The React Native app's package, so this installs over it as an
+        // update (same signing key below, higher versionCode).
+        applicationId = "com.secondshooter.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // The React Native app shipped as versionCode 1 / 1.0.0.
+        versionCode = 2
+        versionName = "2.0.0"
 
         buildConfigField("String", "FIREBASE_API_KEY", firebaseField("API_KEY"))
         buildConfigField("String", "FIREBASE_APP_ID", firebaseField("APP_ID"))
@@ -47,11 +54,33 @@ android {
         buildConfigField("String", "FIREBASE_MESSAGING_SENDER_ID", firebaseField("MESSAGING_SENDER_ID"))
     }
 
+    signingConfigs {
+        // The key the React Native app was signed with (the React Native
+        // template's public debug keystore, as android/app/build.gradle used
+        // for release too). Android only installs an update signed with the
+        // same key, and apps.binnyva.com/.well-known/assetlinks.json lists
+        // its fingerprint (FA:C6:17:…:3B:9C) for verified session links.
+        // Moving to a private upload key means a fresh install and an
+        // assetlinks.json update.
+        create("app") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug$appIdSuffix"
+            signingConfig = signingConfigs.getByName("app")
+        }
         release {
-            isMinifyEnabled = false
-            // A test app: sign release builds with the debug key so they install.
-            signingConfig = signingConfigs.getByName("debug")
+            applicationIdSuffix = appIdSuffix
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("app")
         }
     }
 
