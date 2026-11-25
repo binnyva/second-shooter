@@ -46,4 +46,38 @@ class SessionIdsTest {
     fun buildsTheWebRemoteLink() {
         assertEquals("https://apps.binnyva.com/second-shooter/s/WT56V9", SessionIds.remoteUrl("WT56V9"))
     }
+
+    // parseSessionIdFromInput in shared/session-link.ts
+
+    @Test
+    fun parsesABareIdInAnyCase() {
+        assertEquals("WT56V9", SessionIds.parse("  wt56v9 "))
+    }
+
+    @Test
+    fun parsesTheWebRemoteLinkWhateverItsBasePath() {
+        assertEquals("WT56V9", SessionIds.parse("https://apps.binnyva.com/second-shooter/s/WT56V9"))
+        assertEquals("WT56V9", SessionIds.parse("https://example.com/s/wt56v9/"))
+        assertEquals("WT56V9", SessionIds.parse("http://apps.binnyva.com/second-shooter/s/WT56V9"))
+    }
+
+    @Test
+    fun parsesTheAppScheme() {
+        assertEquals("WT56V9", SessionIds.parse("secondshooter://s/WT56V9"))
+    }
+
+    @Test
+    fun parsesAQueryParameterAndJson() {
+        assertEquals("WT56V9", SessionIds.parse("https://example.com/remote?sessionId=WT56V9"))
+        assertEquals("WT56V9", SessionIds.parse("""{"sessionId":"wt56v9"}"""))
+    }
+
+    @Test
+    fun rejectsAnythingElse() {
+        assertEquals(null, SessionIds.parse(""))
+        assertEquals(null, SessionIds.parse("https://example.com/"))
+        assertEquals(null, SessionIds.parse("https://example.com/s/WT56VO"))
+        assertEquals(null, SessionIds.parse("hello there"))
+        assertEquals(null, SessionIds.parse("""{"sessionId":"nope"}"""))
+    }
 }

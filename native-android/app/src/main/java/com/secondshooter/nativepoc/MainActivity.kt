@@ -1,5 +1,6 @@
 package com.secondshooter.nativepoc
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -9,7 +10,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.runtime.LaunchedEffect
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
+import androidx.navigation.navArgument
+import androidx.navigation.navDeepLink
+import com.secondshooter.nativepoc.session.RemoteViewModel
+import com.secondshooter.nativepoc.signaling.SessionIds
+import com.secondshooter.nativepoc.ui.RemoteScreen
+import kotlinx.coroutines.flow.MutableSharedFlow
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.secondshooter.nativepoc.session.CameraSessionViewModel
@@ -20,7 +29,8 @@ import com.secondshooter.nativepoc.ui.SettingsViewModel
 private object Routes {
     const val CAMERA = "camera"
     const val SETTINGS = "settings"
-    // Phase 7 adds "remote" (this phone as the remote).
+    const val REMOTE = "remote"
+    const val REMOTE_PATTERN = "remote?sessionId={sessionId}"
 }
 
 class MainActivity : ComponentActivity() {
@@ -55,12 +65,43 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 val nav = rememberNavController()
+                // A session link while the app is already open.
+                LaunchedEffect(nav) {
+                    newIntents.collect { nav.handleDeepLink(it) }
+                }
                 NavHost(nav, startDestination = Routes.CAMERA) {
                     composable(Routes.CAMERA) {
                         // Scoped to this back-stack entry: kept while Settings
                         // is open and across activity recreation.
                         val session: CameraSessionViewModel = viewModel()
-                        CameraScreen(session, onOpenSettings = { nav.navigate(Routes.SETTINGS) })
+                        CameraScreen(
+                            session,
+                            onOpenSettings = { nav.navigate(Routes.SETTINGS) },
+                            // Replace, not push: leaving camera mode ends the
+                            // camera session and frees the camera for the
+                            // scanner, as the RN app's router.replace did.
+                            onSwitchToRemote = {
+                                nav.navigate(Routes.REMOTE) { popUpTo(Routes.CAMERA) { inclusive = true } }
+                            },
+                        )
+                    }
+                    composable(
+                        Routes.REMOTE_PATTERN,
+                        arguments = listOf(navArgument("sessionId") { type = NavType.StringType; nullable = true }),
+                        deepLinks = listOf(
+                            navDeepLink { uriPattern = "https://apps.binnyva.com/second-shooter/s/{sessionId}" },
+                            navDeepLink { uriPattern = "secondshooter://s/{sessionId}" },
+                        ),
+                    ) { entry ->
+                        val remote: RemoteViewModel = viewModel()
+                        RemoteScreen(
+                            remote,
+                            linkedSessionId = entry.arguments?.getString("sessionId")?.let(SessionIds::parse),
+                            onOpenSettings = { nav.navigate(Routes.SETTINGS) },
+                            onSwitchToCamera = {
+                                nav.navigate(Routes.CAMERA) { popUpTo(nav.graph.id) { inclusive = true } }
+                            },
+                        )
                     }
                     composable(Routes.SETTINGS) {
                         val settings: SettingsViewModel = viewModel()
@@ -69,5 +110,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private val newIntents = MutableSharedFlow<Intent>(extraBufferCapacity = 1)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        newIntents.tryEmit(intent)
     }
 }

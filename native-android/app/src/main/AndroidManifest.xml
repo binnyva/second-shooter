@@ -39,10 +39,28 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Session links, as in app.json: the web remote's URL opens the
+                 remote screen when the app is installed. autoVerify only
+                 succeeds once apps.binnyva.com's assetlinks.json lists this
+                 package and signing key; until then Android asks (or opens
+                 the browser), and the custom scheme always works. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="apps.binnyva.com" android:pathPrefix="/second-shooter/s" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="secondshooter" android:host="s" />
             </intent-filter>
         </activity>
 

@@ -2,7 +2,6 @@ package com.secondshooter.nativepoc.ui
 
 import android.Manifest
 import android.graphics.Bitmap
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -35,6 +34,7 @@ import androidx.compose.material.icons.outlined.Cameraswitch
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.QrCode2
+import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SettingsRemote
 import androidx.compose.material3.Button
@@ -80,9 +80,9 @@ import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 
 // Colours from src/components/CameraControls.tsx.
-private val White20 = Color(0x33FFFFFF)
-private val White10 = Color(0x1AFFFFFF)
-private val Red = Color(0xFFFF3B30)
+internal val White20 = Color(0x33FFFFFF)
+internal val White10 = Color(0x1AFFFFFF)
+internal val Red = Color(0xFFFF3B30)
 private val LensYellow = Color(0xE6FFCC00)
 
 /**
@@ -93,7 +93,7 @@ private val LensYellow = Color(0xE6FFCC00)
  * the remote, not here. The QR code is shown on demand.
  */
 @Composable
-fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) {
+fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit, onSwitchToRemote: () -> Unit) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val lastPhoto by viewModel.lastPhoto.collectAsStateWithLifecycle()
@@ -224,20 +224,30 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
         ui.countdown?.let { TimerCountdown(it) }
 
         CameraControls(
-            viewModel = viewModel,
-            lastPhoto = lastPhoto,
+            mode = ControlsMode.CAMERA,
+            captureMode = ui.captureMode,
+            isRecording = ui.isRecording,
+            recordedSeconds = if (ui.isRecording) ui.recordedSeconds else null,
+            showModeSelector = ui.videoSupported,
+            lenses = Lenses.toLensInfo(ui.lenses, ui.zoom, ui.facing, ui.hasFrontCamera),
+            enabled = true,
+            thumbnail = lastPhoto,
+            onCaptureModeChange = viewModel::setCaptureModeFromUi,
+            onShutter = viewModel::shutterFromUi,
+            onLensSelect = { viewModel.selectLensFromUi(it.id, it.zoom.toFloat()) },
             onOpenGallery = { GalleryApps.open(context, settings.galleryApp) },
             onOpenSettings = onOpenSettings,
-            onShowQr = {
+            onQr = {
                 // No live session (setup failed, or gave up reconnecting):
                 // the QR button starts a fresh one, as in the RN app.
                 if (ui.sessionId == null || ui.canRestart) viewModel.startSession()
                 showQr = true
             },
-            onModeToggle = {
-                Toast.makeText(context, "Remote mode isn't in the Kotlin app yet", Toast.LENGTH_SHORT).show()
-            },
+            onModeToggle = onSwitchToRemote,
             modifier = Modifier.align(Alignment.BottomCenter),
+            // A still mid-recording. The web remote locks itself to video
+            // while recording, so this is the only way to ask for one.
+            rightSlot = if (ui.isRecording) ({ SnapshotButton(viewModel::takePhotoFromUi) }) else null,
         )
 
         if (showQr) {
@@ -246,17 +256,34 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
     }
 }
 
+enum class ControlsMode { CAMERA, REMOTE }
+
+/**
+ * The bottom controls from src/components/CameraControls.tsx, shared by the
+ * camera and remote screens as they were in the RN app. [rightSlot] replaces
+ * the camera/remote switch (the camera puts its snapshot button there while
+ * recording).
+ */
 @Composable
-private fun CameraControls(
-    viewModel: CameraSessionViewModel,
-    lastPhoto: Bitmap?,
+internal fun CameraControls(
+    mode: ControlsMode,
+    captureMode: CaptureMode,
+    isRecording: Boolean,
+    recordedSeconds: Long?,
+    showModeSelector: Boolean,
+    lenses: List<LensInfo>,
+    enabled: Boolean,
+    thumbnail: Bitmap?,
+    onCaptureModeChange: (CaptureMode) -> Unit,
+    onShutter: () -> Unit,
+    onLensSelect: (LensInfo) -> Unit,
     onOpenGallery: () -> Unit,
     onOpenSettings: () -> Unit,
-    onShowQr: () -> Unit,
+    onQr: () -> Unit,
     onModeToggle: () -> Unit,
     modifier: Modifier = Modifier,
+    rightSlot: (@Composable () -> Unit)? = null,
 ) {
-    val ui by viewModel.ui.collectAsStateWithLifecycle()
     val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     Column(
         modifier
@@ -265,11 +292,11 @@ private fun CameraControls(
             .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = maxOf(bottomInset, 20.dp) + 20.dp),
     ) {
         // Row 1: Photo / Video
-        if (ui.videoSupported) {
+        if (showModeSelector) {
             ModeSelector(
-                mode = ui.captureMode,
-                enabled = !ui.isRecording,
-                onSelect = viewModel::setCaptureModeFromUi,
+                mode = captureMode,
+                enabled = enabled && !isRecording,
+                onSelect = onCaptureModeChange,
                 modifier = Modifier.align(Alignment.CenterHorizontally),
             )
             Spacer(Modifier.height(20.dp))
@@ -281,21 +308,13 @@ private fun CameraControls(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Thumbnail(lastPhoto, onOpenGallery)
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Shutter(ui.captureMode, ui.isRecording, viewModel::shutterFromUi)
-            }
-            if (ui.isRecording) {
-                // A still mid-recording. The web remote locks itself to video
-                // while recording, so this is the only way to ask for one.
-                SnapshotButton(viewModel::takePhotoFromUi)
-            } else {
-                CameraRemoteToggle(onModeToggle)
-            }
+            Thumbnail(thumbnail, onOpenGallery)
+            Shutter(captureMode, isRecording, enabled, onShutter)
+            if (rightSlot != null) rightSlot() else CameraRemoteToggle(mode, onModeToggle)
         }
-        if (ui.isRecording) {
+        if (recordedSeconds != null) {
             Text(
-                "%d:%02d".format(ui.recordedSeconds / 60, ui.recordedSeconds % 60),
+                "%d:%02d".format(recordedSeconds / 60, recordedSeconds % 60),
                 color = Red,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 14.sp,
@@ -311,20 +330,20 @@ private fun CameraControls(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             RoundIconButton(Icons.Outlined.Settings, "Settings", 22.dp, onOpenSettings)
-            LensSelector(
-                lenses = Lenses.toLensInfo(ui.lenses, ui.zoom, ui.facing, ui.hasFrontCamera),
-                enabled = !ui.isRecording,
-                onSelect = { viewModel.selectLensFromUi(it.id, it.zoom.toFloat()) },
-            )
+            LensSelector(lenses = lenses, enabled = enabled && !isRecording, onSelect = onLensSelect)
             Box(Modifier.size(52.dp), contentAlignment = Alignment.Center) {
-                RoundIconButton(Icons.Outlined.QrCode2, "Show the pairing QR code", 24.dp, onShowQr)
+                if (mode == ControlsMode.CAMERA) {
+                    RoundIconButton(Icons.Outlined.QrCode2, "Show the pairing QR code", 24.dp, onQr)
+                } else {
+                    RoundIconButton(Icons.Outlined.QrCodeScanner, "Scan another QR code", 22.dp, onQr)
+                }
             }
         }
     }
 }
 
 @Composable
-private fun ModeSelector(
+internal fun ModeSelector(
     mode: CaptureMode,
     enabled: Boolean,
     onSelect: (CaptureMode) -> Unit,
@@ -349,7 +368,7 @@ private fun ModeSelector(
 }
 
 @Composable
-private fun Thumbnail(photo: Bitmap?, onClick: () -> Unit) {
+internal fun Thumbnail(photo: Bitmap?, onClick: () -> Unit) {
     Box(
         Modifier
             .size(56.dp)
@@ -374,7 +393,7 @@ private fun Thumbnail(photo: Bitmap?, onClick: () -> Unit) {
 }
 
 @Composable
-private fun Shutter(mode: CaptureMode, recording: Boolean, onClick: () -> Unit) {
+private fun Shutter(mode: CaptureMode, recording: Boolean, enabled: Boolean, onClick: () -> Unit) {
     val video = mode == CaptureMode.VIDEO
     Box(
         Modifier
@@ -383,7 +402,7 @@ private fun Shutter(mode: CaptureMode, recording: Boolean, onClick: () -> Unit) 
             .background(if (recording) Color(0x4DFF3B30) else Color(0x4DFFFFFF))
             .border(4.dp, if (video) Red else Color.White, CircleShape)
             .semantics { contentDescription = if (recording) "Stop recording" else if (video) "Start recording" else "Take photo" }
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         if (recording) {
@@ -394,22 +413,29 @@ private fun Shutter(mode: CaptureMode, recording: Boolean, onClick: () -> Unit) 
     }
 }
 
-/** The RN app's camera/remote switch. Remote mode arrives in Phase 7. */
+/** The RN app's camera/remote switch; the white knob marks the current mode. */
 @Composable
-private fun CameraRemoteToggle(onClick: () -> Unit) {
+private fun CameraRemoteToggle(mode: ControlsMode, onClick: () -> Unit) {
+    val remote = mode == ControlsMode.REMOTE
     Box(
-        Modifier.size(56.dp).clickable(onClick = onClick).semantics { contentDescription = "Switch to remote mode" },
+        Modifier
+            .size(56.dp)
+            .clickable(onClick = onClick)
+            .semantics { contentDescription = if (remote) "Switch to camera mode" else "Switch to remote mode" },
         contentAlignment = Alignment.Center,
     ) {
         Box(Modifier.width(56.dp).height(30.dp).clip(RoundedCornerShape(15.dp)).background(White20)) {
-            Box(Modifier.offset(x = 2.dp, y = 2.dp).size(26.dp).clip(CircleShape).background(Color.White))
+            Box(
+                Modifier.offset(x = if (remote) 28.dp else 2.dp, y = 2.dp).size(26.dp)
+                    .clip(CircleShape).background(Color.White)
+            )
             Row(
                 Modifier.fillMaxSize().padding(horizontal = 7.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.Outlined.PhotoCamera, null, tint = Color(0x80000000), modifier = Modifier.size(16.dp))
-                Icon(Icons.Outlined.SettingsRemote, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                Icon(Icons.Outlined.PhotoCamera, null, tint = if (remote) Color.White else Color(0x80000000), modifier = Modifier.size(16.dp))
+                Icon(Icons.Outlined.SettingsRemote, null, tint = if (remote) Color(0x80000000) else Color.White, modifier = Modifier.size(16.dp))
             }
         }
     }
@@ -432,7 +458,7 @@ private fun SnapshotButton(onClick: () -> Unit) {
 }
 
 @Composable
-private fun RoundIconButton(icon: ImageVector, description: String, iconSize: Dp, onClick: () -> Unit) {
+internal fun RoundIconButton(icon: ImageVector, description: String, iconSize: Dp, onClick: () -> Unit) {
     Box(
         Modifier.size(44.dp).clip(CircleShape).background(White20).clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -442,7 +468,7 @@ private fun RoundIconButton(icon: ImageVector, description: String, iconSize: Dp
 }
 
 @Composable
-private fun LensSelector(lenses: List<LensInfo>, enabled: Boolean, onSelect: (LensInfo) -> Unit) {
+internal fun LensSelector(lenses: List<LensInfo>, enabled: Boolean, onSelect: (LensInfo) -> Unit) {
     Row(
         Modifier.clip(RoundedCornerShape(20.dp)).background(White10).padding(4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -481,7 +507,7 @@ private fun ConnectionPill(connected: Boolean, status: String) {
 }
 
 @Composable
-private fun Pill(text: String, dot: Color?) {
+internal fun Pill(text: String, dot: Color?) {
     Row(
         Modifier
             .widthIn(max = 320.dp)
@@ -498,7 +524,7 @@ private fun Pill(text: String, dot: Color?) {
 }
 
 @Composable
-private fun TimerCountdown(seconds: Int) {
+internal fun TimerCountdown(seconds: Int) {
     Box(Modifier.fillMaxSize().background(Color(0x80000000)), contentAlignment = Alignment.Center) {
         Text(seconds.toString(), color = Color.White, fontSize = 120.sp, fontWeight = FontWeight.Bold)
     }

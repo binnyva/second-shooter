@@ -60,6 +60,15 @@ Source is in `app/src/main/java/com/secondshooter/nativepoc/`:
   warning come from what the last save did (see "Save Folder" in AGENTS.md).
   `GalleryApps` is `modules/gallery-apps` without the Expo wrapper; its
   `<queries>` block is in this app's manifest.
+- Remote mode (`session/RemoteViewModel.kt`, `rtc/RemoteRtcSession.kt`,
+  `signaling/RemoteSignaling.kt`, `ui/RemoteScreen.kt`, `ui/QrScanner.kt`): this
+  phone as the remote, the Kotlin version of `src/screens/RemoteScreen.tsx` and
+  the web remote. It answers the camera's offers, shows the video, keeps the
+  last 20 photo previews, and claims sessions another remote answered. The QR
+  scanner feeds CameraX frames to ZXing. Session links
+  (`https://apps.binnyva.com/second-shooter/s/{id}`, `secondshooter://s/{id}`)
+  open it directly. The camera/remote switch replaces one screen with the other,
+  so leaving camera mode ends the camera session and frees the camera.
 - `ui/`: Compose screens (camera, settings) under Navigation Compose. The
   viewfinder overlay draws the photo framing mask, the grid, the 16:9 video
   frame and the self-timer. Volume keys reach the camera screen through

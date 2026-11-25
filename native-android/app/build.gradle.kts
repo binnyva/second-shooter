@@ -103,6 +103,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraX")
     implementation("androidx.camera:camera-lifecycle:$cameraX")
     implementation("androidx.camera:camera-video:$cameraX")
+    implementation("androidx.camera:camera-view:$cameraX")
 
     implementation("io.getstream:stream-webrtc-android:1.3.10")
 
