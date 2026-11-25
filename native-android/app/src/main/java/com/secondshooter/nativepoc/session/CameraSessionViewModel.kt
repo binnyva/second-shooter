@@ -382,20 +382,44 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
             send(Response.ErrorMessage("Can't switch cameras while recording"))
             return
         }
-        viewModelScope.launch {
-            try {
-                camera.switchFacing()
-            } catch (e: Exception) {
-                Log.e(TAG, "switchCamera failed", e)
-                _ui.update { it.copy(lastEvent = "Camera switch failed: ${e.message}") }
-            }
-            refreshCameraUi()
-            sendState()
+        viewModelScope.launch { switchCameraNow() }
+    }
+
+    private suspend fun switchCameraNow() {
+        try {
+            camera.switchFacing()
+        } catch (e: Exception) {
+            Log.e(TAG, "switchCamera failed", e)
+            _ui.update { it.copy(lastEvent = "Camera switch failed: ${e.message}") }
         }
+        refreshCameraUi()
+        sendState()
     }
 
     fun setZoomFromUi(level: Float) {
         viewModelScope.launch { setZoom(level) }
+    }
+
+    /**
+     * A lens button on this phone: "S" switches to the front camera; a back
+     * lens switches back first if needed, then zooms. In order, so no delay
+     * is needed between the two (the RN app waited 500ms).
+     */
+    fun selectLensFromUi(lensId: String, zoom: Float) {
+        if (recording != null) return
+        viewModelScope.launch {
+            if (lensId == "selfie") {
+                if (camera.facing != CameraFacing.FRONT) switchCameraNow()
+                return@launch
+            }
+            if (camera.facing == CameraFacing.FRONT) switchCameraNow()
+            setZoom(zoom)
+        }
+    }
+
+    /** Messages are shown briefly; the screen clears them. */
+    fun clearEvent() {
+        _ui.update { it.copy(lastEvent = null) }
     }
 
     private suspend fun setZoom(level: Float) {
@@ -425,14 +449,8 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
             if (started - queuedAt > 50) Log.i(TAG, "Photo waited ${started - queuedAt}ms in the queue")
             val where = if (saved.inFolder) "folder" else "camera roll"
             Log.i(TAG, "Photo saved to $where in ${elapsed}ms (remote=$fromRemote)")
-            _ui.update {
-                it.copy(
-                    lastEvent = if (!saved.inFolder && settings.value.saveFolderUri != null) {
-                        "Couldn't write to the folder; saved to the camera roll"
-                    } else {
-                        "Photo saved in ${elapsed}ms"
-                    }
-                )
+            if (!saved.inFolder && settings.value.saveFolderUri != null) {
+                _ui.update { it.copy(lastEvent = "Couldn't write to the folder; saved to the camera roll") }
             }
             send(Response.PhotoTaken(success = true))
             if (rtc != null) {
@@ -575,7 +593,7 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                     send(Response.RecordingStopped(success = false, error = "Recording ended ($reason)"))
                 } else {
                     Log.i(TAG, "Recording saved: ${seconds}s, ${megabytes}MB, ${event.outputResults.outputUri}")
-                    _ui.update { it.copy(isRecording = false, lastEvent = "Video saved: ${seconds}s, ${megabytes}MB") }
+                    _ui.update { it.copy(isRecording = false) }
                     send(Response.RecordingStopped(success = true))
                 }
                 sendState()
