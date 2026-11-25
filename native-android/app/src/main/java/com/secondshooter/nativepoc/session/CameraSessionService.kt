@@ -41,6 +41,16 @@ class CameraSessionService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
+        // A camera foreground service may only start with the camera
+        // permission held and from the foreground. The ViewModel guarantees
+        // both; anything else (the permission revoked since) just stops.
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "No camera permission; not starting")
+            stopSelf()
+            return
+        }
         goForeground()
         // Wi-Fi power saving adds latency spikes to a 30fps stream once the
         // screen is off.
@@ -49,6 +59,17 @@ class CameraSessionService : LifecycleService() {
             .apply { setReferenceCounted(false); acquire() }
         _running.value = this
         Log.i(TAG, "Started")
+    }
+
+    /**
+     * Not sticky: if the process dies, the session (camera, connection,
+     * Firestore doc) is gone with it, and a service restarted by the system
+     * with nothing to run, and possibly no camera permission any more, would
+     * only crash. The user restarts the session by opening the app.
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        return START_NOT_STICKY
     }
 
     /** Re-declares the service types, e.g. once the microphone is granted. */

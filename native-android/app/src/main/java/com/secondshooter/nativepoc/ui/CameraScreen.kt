@@ -56,6 +56,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.secondshooter.nativepoc.camera.Lenses
 import com.secondshooter.nativepoc.MainActivity
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.secondshooter.nativepoc.protocol.CameraFacing
 import com.secondshooter.nativepoc.protocol.CaptureMode
 import com.secondshooter.nativepoc.session.CameraSessionViewModel
@@ -70,19 +71,34 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
-    var hasCamera by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                PackageManager.PERMISSION_GRANTED
-        )
+    // Camera permission: asked for once on its own; after that the gate
+    // below explains and offers the prompt or Android's settings. Re-read on
+    // every resume, since the answer can change in system settings.
+    var cameraStatus by remember { mutableStateOf(permissionStatus(context, Manifest.permission.CAMERA)) }
+    val requestCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        cameraStatus = permissionStatus(context, Manifest.permission.CAMERA)
     }
-    val requestCamera = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted -> hasCamera = granted }
-
-    LaunchedEffect(hasCamera) {
-        if (hasCamera) viewModel.onCameraPermissionGranted()
-        else requestCamera.launch(Manifest.permission.CAMERA)
+    val askForCamera = {
+        markAsked(context, Manifest.permission.CAMERA)
+        requestCamera.launch(Manifest.permission.CAMERA)
+    }
+    LifecycleResumeEffect(Unit) {
+        cameraStatus = permissionStatus(context, Manifest.permission.CAMERA)
+        onPauseOrDispose { }
+    }
+    LaunchedEffect(cameraStatus) {
+        when {
+            cameraStatus == PermissionStatus.GRANTED -> viewModel.onCameraPermissionGranted()
+            !wasAsked(context, Manifest.permission.CAMERA) -> askForCamera()
+        }
+    }
+    if (cameraStatus != PermissionStatus.GRANTED) {
+        CameraPermissionGate(
+            blocked = cameraStatus == PermissionStatus.BLOCKED,
+            onAllow = askForCamera,
+            onOpenSettings = { openAppSettings(context) },
+        )
+        return
     }
 
     val micPermissionRequest by viewModel.micPermissionRequest.collectAsStateWithLifecycle()
@@ -91,7 +107,14 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
         viewModel::onMicPermissionResult,
     )
     LaunchedEffect(micPermissionRequest) {
-        if (micPermissionRequest) requestMic.launch(Manifest.permission.RECORD_AUDIO)
+        if (!micPermissionRequest) return@LaunchedEffect
+        if (permissionStatus(context, Manifest.permission.RECORD_AUDIO) == PermissionStatus.BLOCKED) {
+            // Android won't show the prompt again; don't pretend to ask.
+            viewModel.onMicPermissionResult(false)
+        } else {
+            markAsked(context, Manifest.permission.RECORD_AUDIO)
+            requestMic.launch(Manifest.permission.RECORD_AUDIO)
+        }
     }
 
     // Volume keys as a shutter, while this screen is showing. The activity
@@ -339,6 +362,31 @@ private fun LastPhotoButton(photo: Bitmap?, onClick: () -> Unit, modifier: Modif
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
+        }
+    }
+}
+
+@Composable
+private fun CameraPermissionGate(blocked: Boolean, onAllow: () -> Unit, onOpenSettings: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().background(Color.Black).safeDrawingPadding().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("Second Shooter needs the camera", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(12.dp))
+        Text(
+            if (blocked) {
+                "Camera access is turned off for this app. Turn it on under Permissions in Android's settings for Second Shooter."
+            } else {
+                "This phone is the camera: it streams what it sees to your remote and saves the photos and videos."
+            },
+            color = Color(0xFFCCCCCC),
+            fontSize = 15.sp,
+        )
+        Spacer(Modifier.height(24.dp))
+        Button(onClick = if (blocked) onOpenSettings else onAllow) {
+            Text(if (blocked) "Open settings" else "Allow camera")
         }
     }
 }

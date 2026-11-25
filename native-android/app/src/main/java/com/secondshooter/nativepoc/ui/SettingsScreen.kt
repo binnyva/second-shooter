@@ -1,25 +1,14 @@
 package com.secondshooter.nativepoc.ui
 
+import android.Manifest
 import android.app.Application
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import com.secondshooter.nativepoc.media.CaptureStore
-import com.secondshooter.nativepoc.media.GalleryApp
-import com.secondshooter.nativepoc.media.GalleryApps
-import com.secondshooter.nativepoc.media.SaveFolder
-import com.secondshooter.nativepoc.settings.SYSTEM_DEFAULT_GALLERY
-import kotlinx.coroutines.flow.combine
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,29 +18,48 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.secondshooter.nativepoc.BuildConfig
+import com.secondshooter.nativepoc.media.CaptureStore
+import com.secondshooter.nativepoc.media.GalleryApp
+import com.secondshooter.nativepoc.media.GalleryApps
+import com.secondshooter.nativepoc.media.SaveFolder
+import com.secondshooter.nativepoc.protocol.FlashMode
 import com.secondshooter.nativepoc.settings.AppSettings
 import com.secondshooter.nativepoc.settings.AspectRatioSetting
 import com.secondshooter.nativepoc.settings.GridOverlay
-import com.secondshooter.nativepoc.settings.TimerDuration
+import com.secondshooter.nativepoc.settings.SYSTEM_DEFAULT_GALLERY
 import com.secondshooter.nativepoc.settings.SettingsRepository
+import com.secondshooter.nativepoc.settings.TimerDuration
 import com.secondshooter.nativepoc.settings.settingsDataStore
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -118,7 +126,12 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
-/** The settings that do something so far; Phase 6 adds the rest and the polish. */
+/**
+ * The settings from app/settings.tsx, in the same sections, minus the
+ * "Remote Preview" section: preview mode and quality only existed for
+ * frame-based preview. Every change is written straight to DataStore and
+ * read live by the camera screen, so nothing needs a restart.
+ */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -130,6 +143,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
         ActivityResultContracts.OpenDocumentTree(),
         viewModel::onFolderPicked,
     )
+
     Surface(Modifier.fillMaxSize()) {
         Column(Modifier.safeDrawingPadding().verticalScroll(rememberScrollState())) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -138,6 +152,41 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                 }
                 Text("Settings", style = MaterialTheme.typography.titleLarge)
             }
+
+            Section("Camera")
+            ChoiceRow(
+                title = "Self-timer",
+                subtitle = "For the shutter on this phone and the volume keys",
+                options = TimerDuration.entries,
+                selected = settings.timer,
+                label = { if (it == TimerDuration.OFF) "Off" else "${it.seconds}s" },
+                onSelect = { v -> viewModel.update { it.copy(timer = v) } },
+            )
+            ChoiceRow(
+                title = "Photo framing",
+                subtitle = "Masks the viewfinder; the photo itself is always 4:3",
+                options = AspectRatioSetting.entries,
+                selected = settings.aspectRatio,
+                label = { it.wire },
+                onSelect = { v -> viewModel.update { it.copy(aspectRatio = v) } },
+            )
+            ChoiceRow(
+                title = "Grid",
+                options = GridOverlay.entries,
+                selected = settings.gridOverlay,
+                label = { if (it == GridOverlay.NONE) "None" else it.wire },
+                onSelect = { v -> viewModel.update { it.copy(gridOverlay = v) } },
+            )
+            ChoiceRow(
+                title = "Flash",
+                subtitle = "Also set from the remote. Video uses the torch",
+                options = FlashMode.entries,
+                selected = settings.flash,
+                label = { it.wire.replaceFirstChar(Char::uppercase) },
+                onSelect = { v -> viewModel.update { it.copy(flash = v) } },
+            )
+
+            Section("Media")
             Column(
                 Modifier
                     .fillMaxWidth()
@@ -168,37 +217,17 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                 Text("Opened by the thumbnail next to the shutter", style = MaterialTheme.typography.bodySmall)
                 Text(viewModel.galleryLabel(settings.galleryApp), style = MaterialTheme.typography.bodyMedium)
             }
-            ChoiceRow(
-                title = "Self-timer",
-                options = TimerDuration.entries,
-                selected = settings.timer,
-                label = { if (it == TimerDuration.OFF) "Off" else "${it.seconds}s" },
-                onSelect = { v -> viewModel.update { it.copy(timer = v) } },
-            )
-            ChoiceRow(
-                title = "Grid",
-                options = GridOverlay.entries,
-                selected = settings.gridOverlay,
-                label = { if (it == GridOverlay.NONE) "None" else it.wire },
-                onSelect = { v -> viewModel.update { it.copy(gridOverlay = v) } },
-            )
-            ChoiceRow(
-                title = "Photo framing",
-                subtitle = "Masks the viewfinder; the photo itself is always 4:3",
-                options = AspectRatioSetting.entries,
-                selected = settings.aspectRatio,
-                label = { it.wire },
-                onSelect = { v -> viewModel.update { it.copy(aspectRatio = v) } },
-            )
-            ToggleRow(
-                title = "Volume keys take photos",
-                checked = settings.volumeShutter,
-                onChange = { on -> viewModel.update { it.copy(volumeShutter = on) } },
-            )
+
+            Section("General")
             ToggleRow(
                 title = "Keep screen awake",
                 checked = settings.keepScreenAwake,
                 onChange = { on -> viewModel.update { it.copy(keepScreenAwake = on) } },
+            )
+            ToggleRow(
+                title = "Volume button shutter",
+                checked = settings.volumeShutter,
+                onChange = { on -> viewModel.update { it.copy(volumeShutter = on) } },
             )
             ToggleRow(
                 title = "Show connection stats",
@@ -206,8 +235,27 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                 checked = settings.showDebugStats,
                 onChange = { on -> viewModel.update { it.copy(showDebugStats = on) } },
             )
+
+            Section("Permissions")
+            PermissionRow(
+                title = "Camera",
+                permission = Manifest.permission.CAMERA,
+                whenMissing = "Needed for everything. Without it the camera stays black.",
+            )
+            PermissionRow(
+                title = "Microphone",
+                permission = Manifest.permission.RECORD_AUDIO,
+                whenMissing = "Videos are recorded without sound.",
+            )
+
+            Text(
+                "Second Shooter ${BuildConfig.VERSION_NAME}",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(16.dp),
+            )
         }
     }
+
     if (choosingGallery) {
         val options = listOf(SYSTEM_DEFAULT_GALLERY to "System default") +
             viewModel.galleryApps.map { it.packageName to it.label }
@@ -235,6 +283,67 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
             },
             confirmButton = { TextButton(onClick = { choosingGallery = false }) { Text("Close") } },
         )
+    }
+}
+
+@Composable
+private fun Section(title: String) {
+    HorizontalDivider(Modifier.padding(top = 8.dp))
+    Text(
+        title,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+    )
+}
+
+/**
+ * Where a permission stands, with the one action that can change it: the
+ * prompt while Android will still show it, the app's system settings once
+ * it won't. Re-checked whenever the screen comes back, e.g. from those
+ * system settings.
+ */
+@Composable
+private fun PermissionRow(title: String, permission: String, whenMissing: String) {
+    val context = LocalContext.current
+    var refresh by remember { mutableIntStateOf(0) }
+    LifecycleResumeEffect(Unit) {
+        refresh++
+        onPauseOrDispose { }
+    }
+    val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
+    val status = remember(refresh) { permissionStatus(context, permission) }
+
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                when (status) {
+                    PermissionStatus.GRANTED -> "Allowed"
+                    PermissionStatus.ASKABLE -> "Not allowed. $whenMissing"
+                    PermissionStatus.BLOCKED -> "Turned off in Android settings. $whenMissing"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (status == PermissionStatus.GRANTED) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+            )
+        }
+        when (status) {
+            PermissionStatus.GRANTED -> Unit
+            PermissionStatus.ASKABLE -> TextButton(onClick = {
+                markAsked(context, permission)
+                request.launch(permission)
+            }) { Text("Allow") }
+            PermissionStatus.BLOCKED -> TextButton(onClick = { openAppSettings(context) }) { Text("Open settings") }
+        }
     }
 }
 
