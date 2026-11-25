@@ -1,8 +1,9 @@
-# Second Shooter: native Android test app
+# Second Shooter: native Android app
 
-A throwaway Kotlin app to answer one question before a full rewrite: **can
-CameraX own the camera, stream it over WebRTC at 2x zoom, and take photos at
-the same time, smoothly, on a real phone?**
+The Kotlin replacement for the React Native Android app, being built phase by
+phase per [PORTING_PLAN.md](PORTING_PLAN.md). It started as a prototype that
+proved CameraX can own the camera, stream it over WebRTC at any zoom, and take
+photos at the same time (1440x1080 at 30fps on a Pixel 9 Pro).
 
 It pairs with the existing web remote (`web-remote/`) through the same
 Firestore signaling and TURN function as the React Native app. It does not
@@ -11,46 +12,65 @@ replace or touch the Expo app; it installs alongside it as
 
 ## How it works
 
-- `CameraStreamer.kt`: CameraX binds **Preview + ImageCapture** to the back
-  camera. Preview renders into a SurfaceTexture owned by WebRTC's
+Source is in `app/src/main/java/com/secondshooter/nativepoc/`:
+
+- `camera/CameraStreamer.kt`: CameraX binds **Preview + ImageCapture** to the
+  back camera. Preview renders into a SurfaceTexture owned by WebRTC's
   `SurfaceTextureHelper`, and each frame goes to a WebRTC `VideoSource` as a
   GPU texture. WebRTC never opens the camera, so there is no handoff, and the
   stream follows zoom (including the switch to the 5x telephoto) because it is
-  the same Preview stream. The on-screen preview is a sink on the same track.
-- `Signaling.kt`: same Firestore layout as `src/services/SignalingService.ts`.
+  the same Preview stream. The texture's built-in sensor rotation is undone and
+  sent as frame metadata instead, as WebRTC's own `Camera2Session` does.
+- `session/CameraSessionViewModel.kt`: owns the camera, the track, the
+  Firestore session and the peer connection, and answers the remote's
+  commands. Being a ViewModel, it survives activity recreation; the camera is
+  re-bound to each new lifecycle and keeps its zoom.
+- `signaling/`: same Firestore layout as `src/services/SignalingService.ts`.
   The phone is the offerer and creates the `camera-commands` data channel.
-- `FirebaseSetup.kt`: Firebase is configured in code from the repo's `.env`
-  (`EXPO_PUBLIC_FIREBASE_*`, read at build time), so there is no
-  `google-services.json`. Also fetches TURN credentials from `getIceServers`.
-- `PairingController.kt`: answers `GET_STATE`, `SET_ZOOM` and `TAKE_PHOTO`;
-  everything else gets an `ERROR`. Photos go to `Pictures/SecondShooter`.
-- `RtcSession.kt`: H.264 is put first in the offer so the hardware encoder
-  can be used.
+  Firebase is configured in code from the repo's `.env` (`EXPO_PUBLIC_FIREBASE_*`,
+  read at build time), so there is no `google-services.json`.
+- `rtc/`: the peer connection (H.264 preferred so the hardware encoder is
+  used), TURN credentials from `getIceServers`, and the stats line.
+- `protocol/Protocol.kt`: the data-channel messages, typed with
+  kotlinx.serialization. `shared/protocol.ts` is the source of truth; see
+  "Protocol checks" below.
+- `settings/`: DataStore, with the React Native app's keys and defaults.
+- `media/PhotoStore.kt`: photos go to `Pictures/SecondShooter`.
+- `ui/`: Compose screens (camera, settings) under Navigation Compose.
 
-Out of scope: video, flash, front camera, settings, save folders, reconnection.
+## Protocol checks
+
+`shared/protocol-fixtures.json` has an example of every message.
+`shared/protocol.ts` lists every message type, and the build fails if a type
+is missing from that list. The Jest test `src/__tests__/protocolFixtures.test.ts`
+fails if the fixtures don't cover the list, and
+`ProtocolFixturesTest.kt` decodes and re-encodes every example. A protocol
+change therefore has to go into `shared/protocol.ts`, the fixtures, and
+`Protocol.kt` together.
 
 ## Build and run
 
 ```bash
 cd native-android
 ANDROID_HOME="$HOME/Library/Android/sdk" ./gradlew :app:installDebug
+ANDROID_HOME="$HOME/Library/Android/sdk" ./gradlew :app:testDebugUnitTest
 ```
 
 Open "SS Native Test", then open the QR code's link on another device.
 
 ## What to look at
 
-The overlay at the top shows, once a second:
+Turn on Settings → "Show connection stats". The overlay then shows, once a second:
 
 - `Camera WxH @ Nfps`: frames CameraX actually delivered.
 - `Sent WxH @ Nfps · kbps`: what the encoder is sending.
 - codec, encoder implementation, `limit` (`none`, `cpu` or `bandwidth`) and the
   ICE path (`host`, `srflx` or `relay`).
 
-The same line is logged under the `SSStats` tag:
+The same line is always logged under the `SSStats` tag:
 
 ```bash
-adb logcat -s SSStats SSPairing SSCamera SSRtc
+adb logcat -s SSStats SSSession SSCamera SSRtc
 ```
 
 On the remote side, `chrome://webrtc-internals` shows the received frame rate.

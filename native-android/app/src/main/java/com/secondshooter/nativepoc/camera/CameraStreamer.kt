@@ -146,9 +146,11 @@ class CameraStreamer(
             preview,
             imageCapture,
         )
-        val previousZoom = camera?.cameraInfo?.zoomState?.value?.zoomRatio
         camera = cam
-        previousZoom?.let { setZoom(it) }
+        // A fresh binding starts back at 1x, and by the time a new owner
+        // binds, the old owner's destruction has already unbound the camera.
+        // So re-apply the zoom we last asked for rather than reading it back.
+        requestedZoom?.let { setZoom(it) }
     }
 
     /** Camera-side frames per second since the last call. */
@@ -163,9 +165,12 @@ class CameraStreamer(
     val zoom: Float
         get() = camera?.cameraInfo?.zoomState?.value?.zoomRatio ?: 1f
 
+    private var requestedZoom: Float? = null
+
     suspend fun setZoom(level: Float): Float {
         val cam = camera ?: return 1f
         val clamped = level.coerceIn(zoomRange)
+        requestedZoom = clamped
         cam.cameraControl.setZoomRatio(clamped).await()
         return clamped
     }
