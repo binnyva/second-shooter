@@ -1,5 +1,10 @@
 # Porting Second Shooter to Kotlin
 
+**Status: done (November 2026).** All eight phases are complete and the
+React Native app has been removed; this file is kept as the record of how and
+why. Paths below refer to the React Native code as it was (`app/`, `src/`,
+`modules/`), now only in git history, and to `native-android/`, now `android/`.
+
 The plan for replacing the React Native Android app with the native Kotlin app
 in `native-android/`. Work through the phases in order. Each one ends with a
 "Done when" list, and a phase isn't finished until every item on it has been

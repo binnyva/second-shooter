@@ -37,12 +37,8 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
-# generated native folders
+# React Native leftovers (the Expo app was removed in favour of android/)
 /ios
-/android
-
-# local native module build output
-modules/*/android/build/
 
 # Me Specific
 0Meta/

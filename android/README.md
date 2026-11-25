@@ -1,18 +1,18 @@
-# Second Shooter: native Android app
+# Second Shooter: the Android app
 
-The Kotlin replacement for the React Native Android app, being built phase by
-phase per [PORTING_PLAN.md](PORTING_PLAN.md). It started as a prototype that
-proved CameraX can own the camera, stream it over WebRTC at any zoom, and take
-photos at the same time (1440x1080 at 30fps on a Pixel 9 Pro).
+Native Kotlin, replacing the earlier React Native app (see
+[PORTING_PLAN.md](PORTING_PLAN.md)). It started as a prototype that proved
+CameraX can own the camera, stream it over WebRTC at any zoom, and take photos
+at the same time (1440x1080 at 30fps on a Pixel 9 Pro). [AGENTS.md](../AGENTS.md)
+has the architecture and the reasoning; this file is a map of the code.
 
-It pairs with the existing web remote (`web-remote/`) through the same
-Firestore signaling and TURN function as the React Native app. It does not
-replace or touch the Expo app; it installs alongside it as
-`com.secondshooter.nativepoc` ("SS Native Test").
+It pairs with the web remote (`web-remote/`) through Firestore signaling and
+the TURN function. Release builds install as `com.secondshooter.app`, debug
+builds as `com.secondshooter.app.debug`.
 
 ## How it works
 
-Source is in `app/src/main/java/com/secondshooter/nativepoc/`:
+Source is in `app/src/main/java/com/secondshooter/app/`:
 
 - `camera/CameraStreamer.kt`: CameraX binds **Preview + ImageCapture +
   VideoCapture** to the back camera (on a Pixel 9 Pro it picks 1440x1080 for
@@ -41,7 +41,7 @@ Source is in `app/src/main/java/com/secondshooter/nativepoc/`:
   the RN app. A remote that joins an already-answered session (a reload, a
   second device) asks for a fresh offer by setting the status to `waiting`, and
   gets a new peer connection on the same session.
-- `signaling/`: same Firestore layout as `src/services/SignalingService.ts`.
+- `signaling/`: same Firestore layout as the React Native app's `SignalingService.ts`.
   The phone is the offerer and creates the `camera-commands` data channel.
   Firebase is configured in code from the repo's `.env` (`EXPO_PUBLIC_FIREBASE_*`,
   read at build time), so there is no `google-services.json`.
@@ -62,7 +62,7 @@ Source is in `app/src/main/java/com/secondshooter/nativepoc/`:
   `<queries>` block is in this app's manifest.
 - Remote mode (`session/RemoteViewModel.kt`, `rtc/RemoteRtcSession.kt`,
   `signaling/RemoteSignaling.kt`, `ui/RemoteScreen.kt`, `ui/QrScanner.kt`): this
-  phone as the remote, the Kotlin version of `src/screens/RemoteScreen.tsx` and
+  phone as the remote, the Kotlin version of the React Native app's `RemoteScreen.tsx` and
   the web remote. It answers the camera's offers, shows the video, keeps the
   last 20 photo previews, and claims sessions another remote answered. The QR
   scanner feeds CameraX frames to ZXing. Session links
@@ -78,7 +78,7 @@ Source is in `app/src/main/java/com/secondshooter/nativepoc/`:
 
 `shared/protocol-fixtures.json` has an example of every message.
 `shared/protocol.ts` lists every message type, and the build fails if a type
-is missing from that list. The Jest test `src/__tests__/protocolFixtures.test.ts`
+is missing from that list. The Jest test `shared/__tests__/protocolFixtures.test.ts`
 fails if the fixtures don't cover the list, and
 `ProtocolFixturesTest.kt` decodes and re-encodes every example. A protocol
 change therefore has to go into `shared/protocol.ts`, the fixtures, and
@@ -87,12 +87,12 @@ change therefore has to go into `shared/protocol.ts`, the fixtures, and
 ## Build and run
 
 ```bash
-cd native-android
+cd android
 ANDROID_HOME="$HOME/Library/Android/sdk" ./gradlew :app:installDebug
 ANDROID_HOME="$HOME/Library/Android/sdk" ./gradlew :app:testDebugUnitTest
 ```
 
-Open "SS Native Test", then open the QR code's link on another device.
+Open "Second Shooter", tap the QR button, and open the link on another device.
 
 ## What to look at
 

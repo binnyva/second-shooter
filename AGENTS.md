@@ -2,255 +2,145 @@
 
 ## Project Overview
 
-Second Shooter is an Expo React Native mobile app that enables one device to remotely control another device's camera over a peer-to-peer WebRTC connection. The main phone captures photos/videos while a secondary phone provides a live preview and remote shutter control. If the second device doesn't have the app, a browser-based remote (in `web-remote/`) is available at `https://apps.binnyva.com/second-shooter/s/{sessionId}`; the same URLs act as deep links that open the app when installed.
+Second Shooter lets one Android phone remotely control another phone's camera over a peer-to-peer WebRTC connection. The camera phone captures photos and videos; a second phone (or any browser) shows a live preview and has the shutter. If the second device doesn't have the app, a browser-based remote (in `web-remote/`) runs at `https://apps.binnyva.com/second-shooter/s/{sessionId}`; the same URLs open the app when it's installed.
+
+The app is native Kotlin (Jetpack Compose, CameraX, WebRTC) in `android/`. It replaced an Expo React Native app in November 2026. The plan it followed is `android/PORTING_PLAN.md`, and the React Native code is in git history before that (`git log -- src/`). There is no iOS app.
 
 ## Build Commands
 
-### Initial Setup (one-time per device)
+Gradle needs `ANDROID_HOME` (`export ANDROID_HOME="$HOME/Library/Android/sdk"`).
 
 ```bash
-# Install dependencies
-npm install
-
-# Build and install the development client on your Android device
-npx expo run:android
+cd android
+./gradlew :app:installDebug          # debug build, installs as com.secondshooter.app.debug
+./gradlew :app:installRelease        # R8-minified, installs as com.secondshooter.app
+./gradlew :app:installRelease -PappIdSuffix=.preview   # a release build beside the installed app
+./gradlew :app:testDebugUnitTest     # JUnit tests (no device)
 ```
 
-This builds the native app with all required modules (react-native-vision-camera, react-native-webrtc) and installs it on your device.
-
-### Ongoing Development
+The build reads the Firebase config from the repo root's `.env` (see Firebase Setup); a build without it fails at startup with a clear message.
 
 ```bash
-# Start the development server
-npx expo start --dev-client
-```
-
-Your device connects to this server and hot-reloads JavaScript changes instantly - no new APK needed.
-
-**When to rebuild**: Only run `npx expo run:android` again if you add/remove native dependencies, add or change native code in `modules/`, change `app.json` config, or modify the `android/` directory.
-
-### Release Build
-
-```bash
-npx expo run:android --variant release
-```
-
-### Tests
-
-```bash
-npm test              # Run Jest unit tests (src/__tests__/)
-npm run test:watch    # Watch mode
-npm run test:coverage # Coverage report
-```
-
-### Web Remote
-
-```bash
-npm run web-remote:dev    # Start the browser remote locally (Vite dev server)
-npm run web-remote:build  # Build the browser remote
+npm test                  # Jest tests for shared/ (the protocol fixtures)
+npm run web-remote:dev    # the browser remote locally (Vite)
+npm run web-remote:build  # build it; deploy web-remote/dist
 ```
 
 ## Architecture
 
 ### Device Roles
-- **Camera Device**: Displays QR code for pairing, hosts the camera, stores captured media (Home screen - index.tsx)
-- **Remote Device**: Scans QR code, receives live preview stream, sends control commands (Remote screen - remote.tsx)
+- **Camera**: creates the Firestore session, shows the QR code on demand, owns the camera, saves media. Start screen (`ui/CameraScreen.kt`, `session/CameraSessionViewModel.kt`).
+- **Remote**: scans the QR code or opens a session link, shows the preview, sends commands (`ui/RemoteScreen.kt`, `session/RemoteViewModel.kt`). The web remote does the same in a browser.
+
+The camera/remote switch replaces one screen with the other (navigation `popUpTo`), so leaving camera mode ends the camera session and frees the camera for the QR scanner.
 
 ### Connection Flow
-1. Camera device creates Firebase signaling session and displays QR code
-2. Remote device scans QR code to obtain session ID
-3. Remote device joins signaling session
-4. WebRTC offer/answer exchange via Firebase Firestore
-5. ICE candidates exchanged for NAT traversal
-6. Direct P2P WebRTC connection established
-7. Data channel created for camera commands
-8. Media stream sends live camera preview to remote
+1. The camera creates `sessions/{id}` in Firestore (6 characters, no look-alikes) and an offer, with the `camera-commands` data channel and its video track.
+2. The remote gets the ID from the QR code or link (`SessionIds.parse` mirrors `shared/session-link.ts`), joins, and answers.
+3. ICE candidates go through `offerCandidates` / `answerCandidates`; TURN credentials come from the `getIceServers` function.
+4. Once connected the remote sends `GET_STATE` and gets `STATE_UPDATE` back.
 
-### Hybrid Preview Streaming
-The remote preview uses one of two stream modes (see `src/utils/streamMode.ts` and `src/components/HybridPreview.tsx`):
-- **`webrtc`**: Native WebRTC video stream — front camera, and back camera at exactly 1x zoom
-- **`frame-based`**: JPEG frames sent over the data channel — back camera at any other zoom level, because WebRTC's `getUserMedia` can't capture vision-camera's zoomed preview
+### Camera pipeline (`camera/CameraStreamer.kt`)
 
-WebRTC and vision-camera compete for the camera; the WebRTC lock is temporarily released when taking remote photos, and a "preview paused" overlay is shown when WebRTC holds the camera.
+**CameraX is the only owner of the camera; WebRTC never opens it.** Preview, ImageCapture and VideoCapture are bound together. Preview renders into a SurfaceTexture owned by WebRTC's `SurfaceTextureHelper`, and each frame goes to a WebRTC `VideoSource` as a GPU texture. So the stream follows zoom and lens switches, and photos and recordings never interrupt it. This is the reason for the rewrite: the React Native app had to hand the lens between vision-camera and `getUserMedia`, with a timed handoff, retries, and a JPEG-frames fallback for zoom.
 
-**The `previewMode` setting gates all of this, and defaults to `'frames'`.** Every switch between the two modes is a physical close/open of the camera module — the AF actuator resets and OIS drops and re-centres, which is audible and felt through the camera bump, and a photo taken in `webrtc` mode costs two of them. `previewMode: 'frames'` pins the preview to frame-based so the lens is never handed over: vision-camera holds it for the whole session, at the cost of a lower-quality, more bandwidth-hungry preview. `'auto'` is the zoom-dependent behaviour described above.
+- **The SurfaceTexture's transform matrix already contains the sensor rotation (and, for the front camera, a horizontal flip).** The buffer is still sensor-shaped, so passing it on as-is gives a rotated, squashed image. The frame listener undoes both in the matrix and sends the rotation as frame metadata (CVO), exactly as WebRTC's own `Camera2Session` does. The remotes mirror front-camera video themselves; only the local viewfinder calls `setMirror`.
+- **The stream is 4:3, 1440x1080, 30fps target.** On a Pixel 9 Pro: photos 4080x3072, video 1920x1080, all three bound at once. If a phone can't bind all three, video is dropped (`videoSupported`) and the rest keeps working.
+- **H.264 is put first in the offer** (`RtcSession.preferHardwareFriendlyCodecs`) so the hardware encoder is used.
+- **The stream stays portrait**, as the portrait-locked RN app's did. Only captures follow the device's orientation (`OrientationEventListener` → `targetRotation`); a recording keeps the rotation it started with.
+- **Re-binding resets zoom to 1x**, and a new lifecycle owner binds after the old one already unbound. So `CameraStreamer` re-applies the last *requested* zoom rather than reading it back.
+- **Lens buttons come from the physical cameras' focal lengths** (`physicalZoomRatios`, `camera/Lenses.kt`), not a guess from max zoom. Pixels list each lens twice, the full sensor and a half-size "physical camera" that is its 2x crop mode; grouping by focal length and keeping the largest sensor leaves one per lens. Telephotos from 3x up are labelled by the nearest whole number (the Pixel's 4.51x is "5"). A digital 2x is offered unless a lens covers it.
 
-There is deliberately no "always WebRTC" — the back camera above 1x can't be streamed by `getUserMedia` at all, so `'auto'` is as close to it as the hardware allows.
+### Session lifetime
 
-`'frames'` still calls `startLocalStream()` once at pairing (one open/close), because the video track must be in the SDP before the offer for a later switch to `'auto'` to be a plain resume instead of a renegotiation. The track then sits paused for the session.
-
-**`'auto'` is on probation.** It is the reason `CAMERA_HANDOFF_MS`, the contention retry budget, and the reconnect's forced fallback to frame-based all exist. If frame-based preview proves good enough on its own, that branch and everything propping it up should be deleted.
-
-**The handoff between them is a race.** Neither releases the camera synchronously and neither reports when it's done, so each switch just waits `CAMERA_HANDOFF_MS` (`app/index.tsx`). Measured on a Pixel with `adb logcat -s Camera2CameraImpl:D org.webrtc.Logging:I`, the old 200ms lost in *both* directions: CameraX logged `onClosed()` 58ms after WebRTC had begun opening, and WebRTC's device closed 106ms after CameraX started force-opening. It only appeared to work because CameraX force-opens and retries. When the HAL declines the resulting stream combination you get `CameraState.ERROR_STREAM_CONFIG`, surfaced as `session/invalid-output-configuration`.
-
-So the timeout is a mitigation, not a fix — the `<Camera>`'s `onError` is what makes it safe, remounting on the contention codes (`session/invalid-output-configuration`, `session/camera-not-ready`, `session/hardware-cost-too-high`, `device/camera-already-in-use`) up to `CAMERA_MAX_RETRIES`. Keep an `onError` on any `<Camera>` that shares the device with WebRTC: without one the failure escapes as an unhandled error and the preview stays dead with no way back.
+- **`CameraSessionViewModel` owns the camera, the track, the Firestore session and the peer connection**, so activity recreation (dark mode, font size) doesn't drop the remote.
+- **`CameraSessionService` is a foreground service (type camera, plus microphone once granted) and the camera binds to its lifecycle, not the screen's.** The session keeps streaming with the screen off or the app in the background; backing out of the app clears the ViewModel and stops the service. This removed most of the RN app's reconnection machinery, which existed because Android killed the camera on screen-off.
+- **The service is not sticky and checks the camera permission in `onCreate`.** When the camera permission was revoked mid-session, a sticky service was restarted by Android and crashed: starting a camera-type foreground service without the permission throws.
+- A low-latency Wi-Fi lock is held while the service runs.
 
 ### Reconnection
 
-Turning a device's screen off backgrounds the app, and neither half of a pairing survives that on its own: Android ends every `getUserMedia` track and tears down vision-camera's session, and once ICE consent checks go unanswered both peer connections drop. Recovery (`src/hooks/useAppState.ts` plus the reconnect effects in `app/index.tsx`):
+- **The camera owns recovery**, because it's the offerer. A `DISCONNECTED` or `FAILED` connection is renegotiated with an ICE restart (`restartIce()` + a new offer) after `RECONNECT_GRACE_MS` (3s), every `RECONNECT_RETRY_MS` (5s), up to `RECONNECT_MAX_ATTEMPTS` (12). SCTP survives an ICE restart, so the data channel and media carry over and nobody re-pairs.
+- **Because the data channel is reused, its open event fires once per connection.** The remote therefore sends `GET_STATE` on every transition to connected.
+- **A remote joining a session that's already been answered asks for a fresh offer.** The camera makes one offer per connection, so a reloaded tab or a second device would answer a stale offer and hang on "Connecting". The remote (`claimSession()` in the web remote, `RemoteSignaling.claim()` in the app) sets the status back to `waiting`; the camera starts a new peer connection on the same session. The previous remote sees an offer with a different DTLS fingerprint and shows "Another remote has taken over this session". ICE-restart offers keep the fingerprint, so they're applied in place.
+- The remote covers a stale image with "Reconnecting to camera..." after 8s of not being connected.
 
-- **A resume only remounts the camera when the camera screen is the focused one.** Leaving the app for the folder picker or the gallery resumes it too, and rebuilding a CameraX session behind whatever screen the user is actually looking at is wasted work landing exactly where they're waiting for a tap to respond. The camera is inactive while unfocused, and the navigation-focus effect remounts it on the way back.
-- **The camera device owns recovery**, because it is the offerer. It retries from `connectionState`, not from its own resume, so it also covers the case where only the remote's screen was off.
-- **Renegotiation is an ICE restart** (`createOffer({ iceRestart: true })`), not a new connection. SCTP survives an ICE restart, so the data channel and the negotiated media sections carry over and neither side has to re-pair. Retries are paced by `RECONNECT_GRACE_MS` / `RECONNECT_RETRY_MS` / `RECONNECT_MAX_ATTEMPTS`.
-- **A dropped connection falls back to `frame-based`** and stops the WebRTC track. Frame-based needs no lens, so the local preview works again and the reconnect has one less thing to get right; the stream-mode effect promotes it back to `webrtc` once connected.
-- **Because the data channel is reused, `onDataChannelOpen` fires only once per pairing.** The remote therefore re-issues `GET_STATE` on every transition to connected — without it, a remote that dropped in `webrtc` mode comes back rendering an `RTCView` for a track the camera has since abandoned.
-- **A remote joining a session that's already been answered asks for a fresh offer.** The camera makes one offer per connection, so a reloaded tab or a second device used to answer a stale offer and hang on "Connecting". The web remote's `claimSession()` now sets the status back to `waiting`; a camera that understands this (the Kotlin app) starts a new peer connection on the same session, and the previous remote sees an offer with a different DTLS fingerprint and shows "Another remote has taken over this session". ICE-restart offers keep the fingerprint, so they're still applied in place. The React Native camera ignores the request, so there the remote waits as before.
-- **A resume can also find a dead track under a still-`connected` connection** (a short screen-off doesn't outlast ICE consent). The camera checks `hasLiveVideoTrack()` on every resume, independently of connection state.
+### Save Folder (`media/CaptureStore.kt`, `media/SaveFolder.kt`)
 
-### Save Folder
+Captures go to the folder the user picked (a Storage Access Framework tree, the `saveFolderUri` setting) or to the camera roll (`Pictures/SecondShooter`, `Movies/SecondShooter`). **The camera roll is the fallback, not a choice**: it's used when no folder is set and when a folder write fails.
 
-Captures go to the folder the user browsed to, addressed by the persisted SAF tree URI in the `saveFolderUri` setting (`src/utils/saveFolder.ts`). `MediaService.savePhoto()`/`saveVideo()` are the only readers of that setting — every shutter path goes through them, so nothing should call `MediaLibrary.createAssetAsync` directly.
+- **Photos are captured to a cache file, then copied** through a ContentResolver stream into the folder, so a folder that fails mid-write still leaves the shot in the camera roll. Videos record straight to the folder (`FileDescriptorOutputOptions`, opened `"rw"` because the muxer seeks); a folder that can't be opened falls back before recording starts. Nothing goes through base64.
+- **Never list a save folder.** `DocumentFile.listFiles()` / `readDirectoryAsync` queries every entry: measured at over a second on ~2000 files, and the RN app's Settings froze on it. The shutter thumbnail is the last photo saved (`lastPhotoUri`, stored with the folder it belongs to); a broken folder is noticed when a save fails (`brokenSaveFolder`) or when `contentResolver.persistedUriPermissions` no longer holds our write grant. `getInfoAsync`-style probes are no alternative: on a tree URI they report a good folder as missing.
+- **The picker is opened with no initial URI.** Passing the current folder made DocumentsUI enumerate it before drawing: over five seconds of blank screen with ~2700 photos (Android 17).
+- Two picker behaviours that look like bugs and aren't: `ACTION_OPEN_DOCUMENT_TREE` lists only subfolders, so a folder of photos looks empty; and DocumentsUI takes seconds on a big directory, showing the previous one meanwhile.
+- File names are `SecondShooter_IMG_yyyyMMdd_HHmmss_SSS.jpg` / `_VID_…mp4`, as the RN app made them.
 
-**The camera roll is the fallback, not a choice.** There's exactly one option in Settings — the folder — and `expo-media-library` catches everything it can't cover: before the user has picked a folder, off Android, and when a folder write fails. Settings shows which of those is in effect rather than presenting the camera roll as something to select.
+### Gallery App (`media/GalleryApps.kt`)
 
-**Folders are Android-only.** They're built on the Storage Access Framework, which is the only way to write outside the sandbox under scoped storage; expo-file-system's SAF namespace throws `UnavailabilityError` off Android, and iOS has no equivalent grant that survives a restart (security-scoped bookmarks aren't persisted). `isSaveFolderSupported()` hides the row elsewhere.
+The thumbnail opens the app in the `galleryApp` setting (`system-default` or a package name).
 
-Two consequences worth knowing:
+- **The `<queries>` block in `AndroidManifest.xml` must stay in step with `GalleryApps.queryIntents()`.** Android 11+ hides undeclared packages, and an undeclared query returns an empty list rather than failing. Visibility is per package, so an app matched there is also visible to `getLaunchIntentForPackage`, which filters out editors and share targets without `QUERY_ALL_PACKAGES`.
+- Without a package the intent goes out implicitly, so the user's default wins. With one, the component is pinned, since OEM galleries are inconsistent about `CATEGORY_DEFAULT`. An uninstalled choice falls back to the system default.
 
-- **The bytes go through base64.** expo-file-system has no native `file://` → `content://` copy (its `copyAsync` resolves the destination as a java `File`), so a folder save reads the capture as base64 and writes it back out. That holds ~4/3 of the file in memory, on the background save queue.
-- **A grant can die without warning** — revoked in system settings, or the folder deleted. Saves that fail fall back to the camera roll rather than losing the shot, and record the folder they failed against (`MediaService.getBrokenSaveFolder()`); Settings warns from that. Re-picking a folder clears it.
+### Remote mode
+- **QR scanner** (`ui/QrScanner.kt`): CameraX frames' Y plane into ZXing (no ML Kit download). The first code holding a session ID wins.
+- **Session links**: `https://apps.binnyva.com/second-shooter/s/{id}` (verified App Link) and `secondshooter://s/{id}`, cold or while running (`onNewIntent` → `handleDeepLink`).
+- **Photo previews** (`PHOTO_DATA`) are kept as files, last 20, oldest first, in a pager viewer.
+- **Frame-based preview (`FRAME_DATA`) isn't shown**: only the old React Native camera sends it. The remote says so.
 
-A folder save produces no `MediaLibrary.Asset`, so `SavedMedia.uri` (not `asset.uri`) is what the shutter thumbnail follows.
+### Settings and permissions
+- Settings live in DataStore (`settings/`) with the RN app's keys and defaults, minus `previewMode` and `previewQuality`. Every setting is read live; none needs a restart.
+- The camera permission is asked for once unprompted; afterwards the camera screen explains and offers the prompt, or Android's settings once the prompt is blocked (`ui/Permissions.kt`). The microphone is asked for on the first recording; refusing records without sound.
+- Volume keys reach the camera and remote screens through `MainActivity.volumeKeyListener`.
 
-**Never list a save folder to find the newest photo.** `SAF.readDirectoryAsync` is `DocumentFile.listFiles()`: it queries every entry and marshals one URI string per file across the bridge. Measured on a folder of ~2000 files it costs over a second, and the paths that wanted it — the thumbnail, and the folder's writability check — both key on `saveFolderUri`, so picking a folder ran two of them back to back and the Settings row visibly froze.
-
-Instead `savePhoto()` writes the URI down (`@secondshooter_last_photo`, stored with the folder it belongs to) and `getLastPhotoUri()` reads it back. A folder we haven't saved to in this install shows no thumbnail until the next capture — a cold start and one empty button, against a freeze every time the folder is picked. Settings skips the writability check for a folder the picker just returned, since that grant is seconds old.
-
-**The folder picker has one pending request, and losing its result wedges it for the process.** `requestDirectoryPermissionsAsync` stores the promise in a single slot on the native module and clears it only in `OnActivityResult`; if that result never arrives — a dev-client reload or an activity recreation while the picker is in front will do it — every later request is rejected with "You have an unfinished permission request" until the process restarts. There is no JS-side reset. `pickSaveFolder()` therefore returns a status rather than a nullable folder, because 'cancelled' and 'stuck' look identical on screen (no picker, nothing changed) and only one of them is the user's doing; Settings tells them to relaunch. It also refuses to issue a second request while one is open, which is the one way our own code could cause the same rejection.
-
-**Nothing in the app lists a save folder any more**, and nothing should start. The writability probe that used to run on entry to Settings was the same `listFiles()` cost, aimed at the very provider the folder picker is about to need — it was replaced by the failed-save marker above. If a real permission check is ever needed, it has to be a native check against `contentResolver.persistedUriPermissions`; `getInfoAsync` is not an alternative, since on a tree URI it tries `openInputStream` and reports a perfectly good folder as missing.
-
-**The picker is opened with no `EXTRA_INITIAL_URI`.** Passing the current folder made DocumentsUI resolve and enumerate it before drawing: measured on Android 17 with ~2700 photos in the target folder, over five seconds of blank screen after the tap, and the stale listing kept showing through the next directory browsed to. Reopening where the user left off is not worth that.
-
-Two things about the picker that look like bugs and aren't: `ACTION_OPEN_DOCUMENT_TREE` lists only selectable items, i.e. **subfolders**, so a folder holding nothing but photos correctly appears empty; and DocumentsUI's own load of a large directory takes seconds, during which it shows the previous directory's contents.
-
-### Gallery App
-
-Tapping the shutter thumbnail calls `MediaService.openGallery()`, which opens the app named by the `galleryApp` setting — either the `'system-default'` sentinel or an Android package name. It's the only reader of that setting.
-
-**This needs native code, which is why `modules/gallery-apps/` exists.** Neither half is reachable from JS: enumerating what's installed needs `PackageManager.queryIntentActivities`, and launching a *particular* app needs an explicit intent, which `Linking.openURL` can't express — the old implementation could only fire an implicit `content://media/…` VIEW intent and let the system decide, so the setting had nothing to act on and was rendered permanently disabled.
-
-- **Android-only.** iOS has one Photos app and no way to see what else is installed, so `isGalleryAppChoiceSupported()` hides the row there. It's also false on Android when the native module is absent, which is what a *JS-only* reload of this feature looks like — adding a native module needs `npx expo run:android`, not just a Metro refresh.
-- **The `<queries>` block in the module's `AndroidManifest.xml` must stay in step with `galleryQueryIntents()`.** Android 11+ hides packages you haven't declared an interest in, and an undeclared query returns an empty list rather than failing — a mismatch shows up as "no gallery apps installed", not as an error. Visibility is granted per package, so an app matched by those queries is also visible to `getLaunchIntentForPackage`, which is how the list filters out editors and share targets without needing a MAIN/LAUNCHER query (or `QUERY_ALL_PACKAGES`).
-- **Launching resolves differently with and without a package.** With none, the intent goes out implicitly so the user's own default gallery wins. With one, the module pins the component itself, so any matching activity works — OEM galleries are inconsistent about declaring `CATEGORY_DEFAULT`.
-- **A stored package can stop being installed**, and nothing tells the setting. `openGallery()` falls back to the system default and then to `Linking`; Settings shows the raw package name when it can't find a label for it.
-
-`modules/` is autolinked by Expo without a config plugin (`nativeModulesDir` defaults to `./modules`), so `android/` — which is generated and gitignored — needs no edit.
-
-### Key Services
-- `src/services/WebRTCService.ts` - P2P connection management
-- `src/services/CameraService.ts` - Camera operations wrapper using react-native-vision-camera
-- `src/services/SignalingService.ts` - Firebase Firestore signaling handler
-- `src/services/MediaService.ts` - Photo/video saves, routed by the `saveFolderUri` setting (see Save Folder); also opens the gallery app (see Gallery App)
-- `src/services/SettingsService.ts` - Persistent app settings via AsyncStorage
-
-### Custom Hooks
-- `src/hooks/useCamera.ts` - Camera state and controls
-- `src/hooks/usePeerConnection.ts` - WebRTC connection hook
-- `src/hooks/useSignaling.ts` - Firebase signaling hook
-- `src/hooks/useSettings.ts` - App settings hook
-- `src/hooks/useVolumeShutter.ts` - Volume buttons as shutter trigger (react-native-volume-manager)
-- `src/hooks/useAppState.ts` - Foreground/background tracking; drives reconnection after a screen-off
-
-### Key Utilities
-- `src/utils/lensDetection.ts` - Detects physical lenses (ultra-wide/wide/telephoto) for zoom buttons
-- `src/utils/streamMode.ts` - Chooses WebRTC vs frame-based preview mode
-- `src/utils/saveFolder.ts` - SAF folder picking, persistence check, and tree-URI display names
-- `src/utils/galleryApps.ts` - Wraps the `gallery-apps` native module: support check, installed-app list, launch
-- `src/utils/sessionId.ts` - Session ID generation
+### Code map (`android/app/src/main/java/com/secondshooter/app/`)
+- `camera/` CameraX → WebRTC (`CameraStreamer`), lens buttons (`Lenses`)
+- `rtc/` peer connections (`RtcSession` camera side, `RemoteRtcSession` remote side), TURN (`IceServers`), stats, `WebRtcEngine`
+- `signaling/` Firestore (`Signaling` camera side, `RemoteSignaling` remote side), `SessionIds`, `FirebaseSetup`
+- `protocol/` data-channel messages (kotlinx.serialization)
+- `session/` ViewModels, the foreground service, photo history
+- `media/` saving, save folder, gallery apps
+- `settings/` DataStore settings
+- `ui/` Compose screens; `CameraControls` is shared by the camera and remote screens, laid out as the RN app's
 
 ### Shared Code (`shared/`)
-Shared between the mobile app and the web remote:
-- `shared/protocol.ts` - Data channel command/response types (source of truth for the protocol)
-- `shared/signaling.ts` - Signaling message types
-- `shared/session-link.ts` - Session URL building/parsing (`/s/{sessionId}` links)
-- `shared/ice.ts` - STUN server list, ICE tuning constants, and the `getIceServers` callable's name/region/response parsing
-
-### Native Android Test App (`native-android/`)
-
-A standalone Kotlin/Compose proof of concept for a possible rewrite. It shares nothing with the Expo app's code; it pairs with the web remote through the same Firestore session layout and protocol, and reads its Firebase config from the root `.env` at build time. If you change `shared/protocol.ts` or the signaling layout, its `Protocol.kt` and `Signaling.kt` are hand-written copies that need the same change. Build with `cd native-android && ./gradlew :app:installDebug` (with `ANDROID_HOME` set).
+Used by the web remote, and the source of truth the app's copies are checked against:
+- `shared/protocol.ts` - data-channel types. `COMMAND_TYPES` / `RESPONSE_TYPES` list every type and fail to compile if one is missing.
+- `shared/protocol-fixtures.json` - an example of every message. `shared/__tests__/protocolFixtures.test.ts` (Jest) fails if it doesn't cover every type; `ProtocolFixturesTest.kt` (JUnit) decodes and re-encodes every example. **A protocol change goes into `protocol.ts`, the fixtures and `Protocol.kt` together.**
+- `shared/signaling.ts`, `shared/session-link.ts`, `shared/ice.ts` - signaling types, session links, STUN list and the `getIceServers` contract. `Signaling.kt`, `SessionIds.kt` and `IceServers.kt` are hand-written copies.
 
 ### Tech Stack
-- **Framework**: Expo (with prebuild for native modules)
-- **Navigation**: Expo Router
-- **Camera**: react-native-vision-camera (frame processors disabled — frame-based preview uses `takeSnapshot()`, not a frame processor)
-- **P2P/Streaming**: react-native-webrtc
-- **QR**: expo-camera (scanner), react-native-qrcode-svg (generator)
-- **Signaling**: Firebase Firestore
-- **NAT traversal**: STUN servers (`shared/ice.ts`) plus Cloudflare Realtime TURN, with credentials minted per connection by the `getIceServers` Cloud Function
-- **Settings storage**: @react-native-async-storage/async-storage
-- **Volume shutter**: react-native-volume-manager
-- **Web remote**: Vite + React (in `web-remote/`)
+- **App**: Kotlin, Jetpack Compose, Navigation Compose, ViewModel, DataStore
+- **Camera**: CameraX (Preview + ImageCapture + VideoCapture; camera2 interop for lens info)
+- **P2P/Streaming**: `io.getstream:stream-webrtc-android`
+- **QR**: ZXing (drawing and scanning)
+- **Signaling**: Firebase Firestore, anonymous auth (Firebase Android SDK)
+- **NAT traversal**: STUN plus Cloudflare Realtime TURN, credentials from the `getIceServers` Cloud Function
+- **Web remote**: Vite + React (`web-remote/`)
 
 ## Project Structure
 
 ```
 ./
-├── app/                          # Expo Router screens
-│   ├── _layout.tsx               # Root layout
-│   ├── index.tsx                 # Home = Camera mode (default)
-│   ├── remote.tsx                # Remote control screen
-│   ├── settings.tsx              # Settings screen
-│   ├── s/[sessionId].tsx         # Deep link handler for session URLs
-│   └── ui-test.tsx               # UI test screen
-├── src/
-│   ├── components/               # UI components
-│   │   ├── CameraView.tsx
-│   │   ├── CameraControls.tsx
-│   │   ├── HybridPreview.tsx     # WebRTC / frame-based preview switcher
-│   │   ├── RemotePreview.tsx
-│   │   ├── PhotoViewer.tsx       # Captured photo review on remote
-│   │   ├── QRCodeDisplay.tsx
-│   │   ├── QRCodeScanner.tsx
-│   │   ├── GridOverlay.tsx
-│   │   ├── TimerCountdown.tsx
-│   │   └── AspectRatioContainer.tsx
-│   ├── services/                 # Core services
-│   │   ├── WebRTCService.ts
-│   │   ├── SignalingService.ts
-│   │   ├── CameraService.ts
-│   │   ├── MediaService.ts
-│   │   └── SettingsService.ts
-│   ├── hooks/                    # React hooks
-│   │   ├── useCamera.ts
-│   │   ├── usePeerConnection.ts
-│   │   ├── useSignaling.ts
-│   │   ├── useSettings.ts
-│   │   └── useVolumeShutter.ts
-│   ├── types/                    # TypeScript definitions
-│   │   ├── index.ts
-│   │   └── settings.ts
-│   ├── config/                   # Configuration
-│   │   ├── firebase.ts           # Firebase initialization (env vars)
-│   │   └── webrtc.ts             # ICE server config
-│   ├── utils/                    # Utilities
-│   │   ├── permissions.ts
-│   │   ├── sessionId.ts
-│   │   ├── lensDetection.ts
-│   │   ├── saveFolder.ts
-│   │   ├── galleryApps.ts
-│   │   └── streamMode.ts
-│   └── __tests__/                # Jest unit tests (with mocks)
-├── modules/                      # Local Expo native modules (autolinked)
-│   └── gallery-apps/             # Android: list & launch gallery apps
-│       ├── expo-module.config.json
-│       ├── src/GalleryApps.ts    # JS side (optional native module)
-│       └── android/              # Kotlin module + <queries> manifest
-├── shared/                       # Code shared with web remote
-│   ├── protocol.ts               # Data channel protocol types
-│   ├── signaling.ts              # Signaling message types
-│   ├── session-link.ts           # Session URL helpers
-│   └── ice.ts                    # STUN list + getIceServers callable contract
-├── functions/                    # Firebase Cloud Functions
-│   ├── src/index.ts              # getIceServers - mints Cloudflare TURN credentials
-│   └── .env.example              # Cloudflare TURN key ID template (.env is untracked)
-├── web-remote/                   # Browser-based remote (Vite + React)
-├── native-android/               # Kotlin test app (CameraX → WebRTC), see its README
-│   └── src/lib/                  # firebase, signaling, webrtc clients
-├── app.json                      # Expo configuration with permissions & deep links
-├── .env.example                  # Firebase env var template
-└── package.json
+├── android/                      # The app (Gradle project)
+│   ├── app/src/main/java/com/secondshooter/app/   # see Code map
+│   ├── app/src/test/             # JUnit tests
+│   ├── app/debug.keystore        # signing key (see Signing)
+│   ├── README.md                 # the app's internals
+│   └── PORTING_PLAN.md           # how the React Native app was replaced
+├── shared/                       # protocol, signaling and link code shared with the web remote
+├── web-remote/                   # browser remote (Vite + React)
+├── functions/                    # getIceServers: mints Cloudflare TURN credentials
+├── firestore.rules
+├── .env.example                  # Firebase config template (read by android/ and web-remote/)
+└── package.json                  # Jest for shared/, web-remote scripts
 ```
+
+## Signing and releases
+
+- **The app is `com.secondshooter.app`, signed with `android/app/debug.keystore`** — the React Native template's public debug keystore, which the RN app's release builds also used. Keeping the key lets the app install over the RN app as an update, and `https://apps.binnyva.com/.well-known/assetlinks.json` already lists its fingerprint (`FA:C6:17:…:3B:9C`), which is what verifies the session links. The key is public, so it's no protection: moving to a private upload key means users reinstall once and assetlinks.json gets the new fingerprint.
+- Bump `versionCode` in `android/app/build.gradle.kts` for every build that should install over a previous one (the RN app was 1).
+- Release builds are minified with R8. WebRTC is kept whole for JNI (`proguard-rules.pro`); check a release build pairs and streams before handing it out (`-PappIdSuffix=.preview` installs it beside the real one).
 
 ## Firebase Setup
 
@@ -258,39 +148,38 @@ Before running the app, you need to:
 
 1. Create a Firebase project at console.firebase.google.com
 2. Enable Firestore Database
-3. Enable **Anonymous** authentication (Authentication → Sign-in method → Anonymous). Clients sign in anonymously before touching Firestore (`ensureSignedIn()` in `src/config/firebase.ts` and `web-remote/src/lib/firebase.ts`); without this provider enabled, session create/join fails.
-4. Copy `.env.example` to `.env` and fill in the `EXPO_PUBLIC_FIREBASE_*` variables (read by `src/config/firebase.ts`)
+3. Enable **Anonymous** authentication (Authentication → Sign-in method → Anonymous). Clients sign in anonymously before touching Firestore (`FirebaseSetup.ensureSignedIn()` and `web-remote/src/lib/firebase.ts`); without this provider, session create/join fails.
+4. Copy `.env.example` to `.env` and fill in the `EXPO_PUBLIC_FIREBASE_*` variables. The names are left over from Expo; the Android build (`android/app/build.gradle.kts`, into `BuildConfig`) and the web remote (Vite's `envPrefix`) both read them. The app is configured in code from these values, so there's no `google-services.json`, and it currently uses the web app's ID.
 5. Deploy the Firestore security rules from `firestore.rules` (paste into Firestore Database → Rules, or `firebase deploy --only firestore:rules`)
-6. Create Firestore **TTL policies** on the `expireAt` field for the collection groups `sessions`, `offerCandidates`, and `answerCandidates` (Firestore Database → the TTL tab, or `gcloud firestore fields ttls update expireAt --collection-group=...`). Clients stamp `expireAt` (1 hour out) on session and candidate docs; TTL garbage-collects abandoned sessions and orphaned candidate docs. TTL deletion is lazy (typically within 24h of expiry) — that's fine, since the rules already prevent stale sessions from being discovered.
-
+6. Create Firestore **TTL policies** on the `expireAt` field for the collection groups `sessions`, `offerCandidates`, and `answerCandidates`. Clients stamp `expireAt` (1 hour out) on session and candidate docs; TTL garbage-collects abandoned sessions and orphaned candidate docs. TTL deletion is lazy (typically within 24h of expiry), which is fine, since the rules already prevent stale sessions from being discovered.
 7. Deploy the `getIceServers` function (`firebase deploy --only functions`) after setting the Cloudflare API token: `firebase functions:secrets:set CLOUDFLARE_TURN_API_TOKEN`. `CLOUDFLARE_TURN_TOKEN_ID` goes in `functions/.env` (copy `functions/.env.example`); both files stay out of git.
-
-The web remote uses the same Firebase public env vars.
 
 ### TURN Relay
 
-STUN alone can't connect peers behind symmetric NAT or most carrier CGNAT, so both clients relay through Cloudflare Realtime TURN when no direct path exists. Cloudflare issues only short-lived credentials via its API — there is no static username/password — so `functions/src/index.ts` mints them:
+STUN alone can't connect peers behind symmetric NAT or most carrier CGNAT, so both clients relay through Cloudflare Realtime TURN when no direct path exists. Cloudflare issues only short-lived credentials via its API, so `functions/src/index.ts` mints them:
 
-- `getIceServers` is an authenticated v2 callable in `us-central1`. Anonymous auth is enough, which keeps the relay quota tied to app users rather than anyone who finds the endpoint.
-- Credentials get a 2h TTL and are cached in-instance until 20 minutes before expiry, so a warm instance serves many pairings from one Cloudflare call. Credential values are never logged.
-- Clients (`src/config/webrtc.ts`, `web-remote/src/lib/webrtc.ts`) fetch on every `createPeerConnection`/`createConnection` — both are async for this reason — and fall back to the STUN-only list if the call fails or times out (8s).
+- `getIceServers` is an authenticated v2 callable in `us-central1`. Anonymous auth is enough, which keeps the relay quota tied to app users.
+- Credentials get a 2h TTL and are cached in-instance until 20 minutes before expiry. Credential values are never logged.
+- Clients (`rtc/IceServers.kt`, `web-remote/src/lib/webrtc.ts`) fetch for every new peer connection and fall back to STUN only if the call fails or times out (8s).
 
-`invoker: 'public'` on the callable is load-bearing: without the `allUsers` → `roles/run.invoker` binding, Cloud Run rejects every client before the function's own auth check runs (the SDK surfaces this as `functions/permission-denied` or `functions/unauthenticated`, which looks exactly like an auth bug). The Firebase CLI only applies that binding when it **creates** the function — adding the option to an existing function and redeploying is silently a no-op. If the binding is ever missing, `firebase functions:delete getIceServers --region us-central1` then deploy again.
+`invoker: 'public'` on the callable is load-bearing: without the `allUsers` → `roles/run.invoker` binding, Cloud Run rejects every client before the function's own auth check runs (surfacing as `functions/permission-denied` or `functions/unauthenticated`, which looks like an auth bug). The Firebase CLI only applies that binding when it **creates** the function. If the binding is ever missing, `firebase functions:delete getIceServers --region us-central1` then deploy again.
 
-To verify TURN actually works, temporarily add `iceTransportPolicy: 'relay'` to the peer connection config on both ends: that forbids direct paths, so pairing succeeding proves the relay is in use.
+To verify TURN works, temporarily set `iceTransportPolicy` to relay on both ends; pairing then proves the relay is in use.
+
+A network that blocks UDP entirely (seen on one Mac connection) leaves only TURN over TCP: Chrome manages that, Firefox there failed with error 701 on every server. That's the network, not the app.
 
 ### Firestore Security Rules
 
-The production rules live in `firestore.rules` (the deployed copy in the Firebase console should always match that file). They enforce:
+The production rules live in `firestore.rules` (the deployed copy should always match it). They enforce:
 
-- **Auth required** — every operation requires `request.auth != null` (anonymous auth); the Firebase config embedded in the APK is not enough to touch the database.
-- **No collection listing** — sessions can only be fetched by exact ID (`allow get`, `allow list: if false`), so joining requires knowing the 6-char session ID from the QR code/link. The ICE candidate subcollections do allow listing, but only within a session whose ID you already know.
-- **Document shape/size validation** — session docs are limited to `createdAt`/`expireAt`/`status`/`offer`/`answer` with size-capped SDP strings; candidate docs to `candidate`/`sdpMLineIndex`/`sdpMid`/`expireAt`. The collection can't be used as free-form storage.
-- **Bounded expiry** — `expireAt` is required on every doc and may be at most 2 hours in the future, so the TTL cleanup can't be sidestepped with a far-future expiry.
+- **Auth required**: every operation requires `request.auth != null` (anonymous auth).
+- **No collection listing**: sessions can only be fetched by exact ID, so joining requires knowing the 6-character ID. The candidate subcollections allow listing, but only within a session whose ID you know.
+- **Document shape and size**: session docs are limited to `createdAt`/`expireAt`/`status`/`offer`/`answer` with size-capped SDP; candidate docs to `candidate`/`sdpMLineIndex`/`sdpMid`/`expireAt`. `status` is one of `waiting`, `offer_sent`, `connected`; a remote setting it back to `waiting` is how it asks for a fresh offer.
+- **Bounded expiry**: `expireAt` is required and at most 2 hours out.
 
 ## Data Channel Protocol
 
-Defined in `shared/protocol.ts` (shared with the web remote — update it there, not in per-app copies). Commands sent as JSON over the WebRTC data channel:
+Defined in `shared/protocol.ts`; JSON over the `camera-commands` data channel:
 
 ```typescript
 type Command =
@@ -310,30 +199,24 @@ type Response =
       videoNeedsRotation?: boolean; previewZoomLimited?: boolean;
       streamMode?: StreamMode }
   | { type: 'ERROR'; message: string }
-  | { type: 'FRAME_DATA'; frameId: number; data: string; timestamp: number }   // frame-based preview
+  | { type: 'CAPTURE_STATE'; capturing: boolean }                              // RN camera only
+  | { type: 'FRAME_DATA'; frameId: number; data: string; timestamp: number }   // RN camera only
   | { type: 'PHOTO_DATA'; data: string; timestamp: number }                    // photo preview on remote
 ```
 
-`StreamMode` is `'webrtc' | 'frame-based'`; `FRAME_DATA` and `PHOTO_DATA` carry base64 JPEG data (never log the `data` field — see Logging Guidelines).
+The Kotlin camera always sends `streamMode: 'webrtc'` and never `FRAME_DATA` or `CAPTURE_STATE`. The web remote still handles them; that path can go once no React Native cameras remain. `PHOTO_DATA` carries a base64 JPEG (never log `data`).
 
-## Platform-Specific Configuration
-
-- **iOS permissions**: Configured in `app.json` (infoPlist)
-- **Android permissions**: Configured in `app.json` (permissions)
-- **Deep links**: Universal links / app links for `apps.binnyva.com/second-shooter/s/*` configured in `app.json` (`ios.associatedDomains`, `android.intentFilters`); custom scheme is `secondshooter://`. Handled by `app/second-shooter/s/[sessionId].tsx` (and `app/s/[sessionId].tsx` for scheme links).
-
-Both platforms require camera, microphone, and photo library permissions.
+The web remote takes its capture mode from `STATE_UPDATE`, so the camera reports `captureMode: 'video'` once recording starts; a photo can't be requested from the web remote mid-recording (the camera screen has a snapshot button for that).
 
 ## Testing Requirements
 
-- **Unit tests**: `npm test` runs Jest tests in `src/__tests__/` with mocks for firebase, vision-camera, and webrtc — no device needed
-- **Manual testing: two physical devices required** - WebRTC and camera don't work in simulators
-- Test on same WiFi network first, then different networks
-- Firebase project must be set up with Firestore enabled and `.env` populated
+- **Unit tests**: `cd android && ./gradlew :app:testDebugUnitTest` (JUnit, no device) and `npm test` (shared protocol fixtures).
+- **Manual testing needs a real camera phone.** An emulator works as the *other* end (its virtual camera streams, slowly, and its video encoder may fail to record), which is how remote mode was tested with one phone.
+- Test on the same Wi-Fi first, then across networks (mobile data on one side).
+- The overlay from Settings → "Show connection stats" shows fps, resolution, bitrate, encoder and ICE path; the same line is always logged: `adb logcat -s SSStats SSSession SSCamera SSRtc SSService SSRemote SSStore`.
 
 ## Logging Guidelines
 
-- **Never log base64 content or data URIs** - Frame data contains large base64 strings that make logs unusable
-- When logging frame-related state, use boolean checks (e.g., `!!frameData`) instead of the actual content
-- Log frame metadata like `frameId` or `data.length` instead of the full `data` string
-- Example: `console.log(\`Frame received: id=${frame.frameId}, size=${frame.data?.length}\`)` NOT `console.log(\`Frame: ${frame.data}\`)`
+- **Never log base64 content or data URIs.** Photo previews are large base64 strings.
+- Log sizes and metadata instead, e.g. `Log.i(TAG, "Sending PHOTO_DATA, size=${thumb.length}")`.
+- Never log TURN credentials.

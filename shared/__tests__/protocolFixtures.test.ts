@@ -5,13 +5,13 @@ import {
   RESPONSE_TYPES,
   type Command,
   type Response,
-} from '../../shared/protocol';
+} from '../protocol';
 
 // shared/protocol-fixtures.json is read by the Kotlin app's tests too
-// (native-android ProtocolFixturesTest), which decode and re-encode every
+// (android ProtocolFixturesTest), which decode and re-encode every
 // example. This side makes sure the file covers the whole protocol.
 const fixtures = JSON.parse(
-  readFileSync(join(__dirname, '../../shared/protocol-fixtures.json'), 'utf8')
+  readFileSync(join(__dirname, '../protocol-fixtures.json'), 'utf8')
 ) as { commands: Command[]; responses: Response[] };
 
 describe('shared/protocol-fixtures.json', () => {
