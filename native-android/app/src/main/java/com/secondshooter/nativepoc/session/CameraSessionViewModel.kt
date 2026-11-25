@@ -1,14 +1,19 @@
 package com.secondshooter.nativepoc.session
 
+import android.Manifest
 import android.app.Application
+import android.content.pm.PackageManager
 import android.util.Log
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoRecordEvent
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.viewModelScope
 import com.secondshooter.nativepoc.camera.CameraStreamer
 import com.secondshooter.nativepoc.camera.Lens
 import com.secondshooter.nativepoc.camera.Lenses
-import com.secondshooter.nativepoc.media.PhotoStore
+import com.secondshooter.nativepoc.media.CaptureStore
 import com.secondshooter.nativepoc.protocol.CameraFacing
 import com.secondshooter.nativepoc.protocol.CameraState
 import com.secondshooter.nativepoc.protocol.CaptureMode
@@ -52,6 +57,11 @@ data class CameraUiState(
     val lenses: List<Lens> = emptyList(),
     val stats: String? = null,
     val lastEvent: String? = null,
+    val captureMode: CaptureMode = CaptureMode.PHOTO,
+    val isRecording: Boolean = false,
+    /** Elapsed recording time, while recording. */
+    val recordedSeconds: Long = 0,
+    val videoSupported: Boolean = true,
 )
 
 const val INITIAL_ZOOM = 2f
@@ -67,7 +77,7 @@ const val INITIAL_ZOOM = 2f
 class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     private val engine = WebRtcEngine(app)
     private val camera = CameraStreamer(app, engine.eglBase, engine.factory)
-    private val photos = PhotoStore(app)
+    private val store = CaptureStore(app)
     private val settingsRepository = SettingsRepository(app.settingsDataStore)
 
     val eglBase: EglBase get() = engine.eglBase
@@ -85,6 +95,15 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     private var firstBind = true
     private var sessionJob: Job? = null
 
+    private var recording: Recording? = null
+    /** A start that's waiting on the microphone prompt. */
+    private var startPendingOnMic = false
+    private var askedForMic = false
+
+    /** True while the screen should show the microphone permission prompt. */
+    private val _micPermissionRequest = MutableStateFlow(false)
+    val micPermissionRequest: StateFlow<Boolean> = _micPermissionRequest.asStateFlow()
+
     init {
         FirebaseSetup.init(app)
         startStatsLoop()
@@ -100,7 +119,9 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                     camera.setZoom(INITIAL_ZOOM)
                     startSession()
                 }
-                _ui.update { it.copy(zoom = camera.zoom, lenses = camera.lenses()) }
+                _ui.update {
+                    it.copy(zoom = camera.zoom, lenses = camera.lenses(), videoSupported = camera.videoSupported)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Camera bind failed", e)
                 _ui.update { it.copy(status = "Camera failed: ${e.message}") }
@@ -201,8 +222,8 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
             Command.GetState -> sendState()
             is Command.SetZoom -> setZoom(command.level.toFloat())
             Command.TakePhoto -> takePhoto(fromRemote = true)
-            Command.StartRecording,
-            Command.StopRecording,
+            Command.StartRecording -> requestStartRecording()
+            Command.StopRecording -> stopRecording()
             is Command.SetFlash,
             Command.SwitchCamera ->
                 send(Response.ErrorMessage("${command::class.simpleName} isn't supported in this build yet"))
@@ -227,13 +248,13 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun takePhoto(fromRemote: Boolean) {
         val started = System.currentTimeMillis()
         try {
-            val uri = camera.takePhoto(photos.newPhotoOutput())
+            val uri = camera.takePhoto(store.newPhotoOutput())
             val elapsed = System.currentTimeMillis() - started
             Log.i(TAG, "Photo saved in ${elapsed}ms (remote=$fromRemote)")
             _ui.update { it.copy(lastEvent = "Photo saved in ${elapsed}ms") }
             send(Response.PhotoTaken(success = true))
             if (rtc != null) {
-                val thumb = photos.thumbnailBase64(uri)
+                val thumb = store.thumbnailBase64(uri)
                 Log.i(TAG, "Sending PHOTO_DATA, size=${thumb.length}")
                 send(Response.PhotoData(thumb, System.currentTimeMillis()))
             }
@@ -244,6 +265,110 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun setCaptureModeFromUi(mode: CaptureMode) {
+        if (_ui.value.isRecording) return
+        _ui.update { it.copy(captureMode = mode) }
+        sendState()
+    }
+
+    /** The phone's own shutter: a photo, or start/stop in video mode. */
+    fun shutterFromUi() {
+        when {
+            _ui.value.isRecording -> stopRecording()
+            _ui.value.captureMode == CaptureMode.VIDEO -> requestStartRecording()
+            else -> takePhotoFromUi()
+        }
+    }
+
+    private fun requestStartRecording() {
+        if (recording != null || startPendingOnMic) return
+        if (!camera.videoSupported) {
+            send(Response.ErrorMessage("This camera can't record video while streaming"))
+            return
+        }
+        val micGranted = ContextCompat.checkSelfPermission(
+            getApplication(), Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!micGranted && !askedForMic) {
+            // Ask once per run, on the camera phone; the remote waits for
+            // RECORDING_STARTED. Refusing still records, just without sound.
+            askedForMic = true
+            startPendingOnMic = true
+            _ui.update { it.copy(lastEvent = "Allow the microphone on this phone to record sound") }
+            _micPermissionRequest.value = true
+            return
+        }
+        startRecording(withAudio = micGranted)
+    }
+
+    fun onMicPermissionResult(granted: Boolean) {
+        _micPermissionRequest.value = false
+        if (startPendingOnMic) {
+            startPendingOnMic = false
+            startRecording(withAudio = granted)
+        }
+    }
+
+    private fun startRecording(withAudio: Boolean) {
+        // Recording means the camera is in video mode; tell the remote so its
+        // shutter becomes a stop button.
+        _ui.update { it.copy(captureMode = CaptureMode.VIDEO) }
+        try {
+            recording = camera.startRecording(store.newVideoOutput(), withAudio, ::onRecordEvent)
+        } catch (e: Exception) {
+            Log.e(TAG, "startRecording failed", e)
+            recording = null
+            _ui.update { it.copy(lastEvent = "Recording failed: ${e.message}") }
+            send(Response.ErrorMessage("Couldn't start recording: ${e.message}"))
+            sendState()
+        }
+        if (!withAudio) _ui.update { it.copy(lastEvent = "Recording without sound (microphone not allowed)") }
+    }
+
+    private fun onRecordEvent(event: VideoRecordEvent) {
+        when (event) {
+            is VideoRecordEvent.Start -> {
+                Log.i(TAG, "Recording started")
+                _ui.update { it.copy(isRecording = true, recordedSeconds = 0) }
+                send(Response.RecordingStarted)
+                sendState()
+            }
+            is VideoRecordEvent.Status -> {
+                val seconds = event.recordingStats.recordedDurationNanos / 1_000_000_000
+                if (seconds != _ui.value.recordedSeconds) _ui.update { it.copy(recordedSeconds = seconds) }
+            }
+            is VideoRecordEvent.Finalize -> {
+                recording = null
+                val stats = event.recordingStats
+                val seconds = stats.recordedDurationNanos / 1_000_000_000
+                val megabytes = stats.numBytesRecorded / 1_000_000
+                if (event.hasError()) {
+                    // Some errors (e.g. size limit) still leave a playable file.
+                    val reason = "error ${event.error}" + (event.cause?.message?.let { ": $it" } ?: "")
+                    Log.e(TAG, "Recording ended with $reason after ${seconds}s, ${megabytes}MB", event.cause)
+                    _ui.update { it.copy(isRecording = false, lastEvent = "Recording ended ($reason)") }
+                    send(Response.RecordingStopped(success = false, error = "Recording ended ($reason)"))
+                } else {
+                    Log.i(TAG, "Recording saved: ${seconds}s, ${megabytes}MB, ${event.outputResults.outputUri}")
+                    _ui.update { it.copy(isRecording = false, lastEvent = "Video saved: ${seconds}s, ${megabytes}MB") }
+                    send(Response.RecordingStopped(success = true))
+                }
+                sendState()
+            }
+            else -> Unit
+        }
+    }
+
+    private fun stopRecording() {
+        val active = recording
+        if (active == null) {
+            send(Response.RecordingStopped(success = false, error = "Not recording"))
+            return
+        }
+        // RECORDING_STOPPED goes out on Finalize, once the file is written.
+        active.stop()
+    }
+
     private fun sendState() {
         val zoom = camera.zoom
         send(
@@ -252,8 +377,8 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                     zoom = zoom.toDouble(),
                     flash = settings.value.flash,
                     facing = CameraFacing.BACK,
-                    captureMode = CaptureMode.PHOTO,
-                    isRecording = false,
+                    captureMode = _ui.value.captureMode,
+                    isRecording = _ui.value.isRecording,
                     streamMode = StreamMode.WEBRTC,
                 ),
                 lenses = Lenses.toLensInfo(camera.lenses(), zoom),
@@ -280,6 +405,7 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                     runCatching { statsTracker.summarize(session.stats()) }.getOrNull()
                 } else null
                 val line = buildString {
+                    if (_ui.value.isRecording) append("REC ${_ui.value.recordedSeconds}s · ")
                     append("Camera $size @ ${cameraFps}fps · zoom ${"%.1f".format(camera.zoom)}x")
                     if (outbound != null) append("\n").append(outbound)
                 }
@@ -298,6 +424,7 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        recording?.stop()
         teardownSession()
         camera.release()
         engine.release()

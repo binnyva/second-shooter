@@ -14,8 +14,10 @@ replace or touch the Expo app; it installs alongside it as
 
 Source is in `app/src/main/java/com/secondshooter/nativepoc/`:
 
-- `camera/CameraStreamer.kt`: CameraX binds **Preview + ImageCapture** to the
-  back camera. Preview renders into a SurfaceTexture owned by WebRTC's
+- `camera/CameraStreamer.kt`: CameraX binds **Preview + ImageCapture +
+  VideoCapture** to the back camera (on a Pixel 9 Pro it picks 1440x1080 for
+  the stream, 4080x3072 for photos and 1920x1080 for video). If a phone can't
+  bind all three, video is dropped and the rest keeps working. Preview renders into a SurfaceTexture owned by WebRTC's
   `SurfaceTextureHelper`, and each frame goes to a WebRTC `VideoSource` as a
   GPU texture. WebRTC never opens the camera, so there is no handoff, and the
   stream follows zoom (including the switch to the 5x telephoto) because it is
@@ -35,7 +37,8 @@ Source is in `app/src/main/java/com/secondshooter/nativepoc/`:
   kotlinx.serialization. `shared/protocol.ts` is the source of truth; see
   "Protocol checks" below.
 - `settings/`: DataStore, with the React Native app's keys and defaults.
-- `media/PhotoStore.kt`: photos go to `Pictures/SecondShooter`.
+- `media/CaptureStore.kt`: photos go to `Pictures/SecondShooter`, videos to
+  `Movies/SecondShooter`.
 - `ui/`: Compose screens (camera, settings) under Navigation Compose.
 
 ## Protocol checks

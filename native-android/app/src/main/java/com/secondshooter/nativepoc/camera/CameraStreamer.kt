@@ -1,5 +1,6 @@
 package com.secondshooter.nativepoc.camera
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Matrix
 import android.net.Uri
@@ -16,6 +17,14 @@ import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.FallbackStrategy
+import androidx.camera.video.MediaStoreOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoRecordEvent
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.guava.await
@@ -39,8 +48,8 @@ import kotlin.coroutines.resumeWithException
  * SurfaceTextureHelper. Every frame that lands there is handed to a WebRTC
  * VideoSource as a GPU texture, so the stream is exactly what CameraX
  * produces, zoom included. The local on-screen preview is a sink on the same
- * track, and ImageCapture is bound alongside Preview on the same camera.
- * Preview + ImageCapture is the most widely guaranteed CameraX combination.
+ * track. ImageCapture and VideoCapture are bound alongside Preview on the
+ * same camera, so photos and recordings never interrupt the stream.
  */
 class CameraStreamer(
     private val context: Context,
@@ -86,7 +95,22 @@ class CameraStreamer(
         )
         .build()
 
+    // FHD, not UHD: binding Preview + ImageCapture + VideoCapture together is
+    // the combination the HAL is least generous with, and the remote can't
+    // show more than ~1080p anyway. Revisit with measurements (PORTING_PLAN
+    // Phase 2).
+    private val recorder = Recorder.Builder()
+        .setQualitySelector(
+            QualitySelector.from(Quality.FHD, FallbackStrategy.lowerQualityOrHigherThan(Quality.FHD))
+        )
+        .build()
+    private val videoCapture = VideoCapture.withOutput(recorder)
+
     private var camera: Camera? = null
+
+    /** False when this camera can't bind video alongside preview and photo. */
+    var videoSupported = true
+        private set
 
     var streamSize: Size? = null
         private set
@@ -140,11 +164,27 @@ class CameraStreamer(
     suspend fun bind(owner: LifecycleOwner) {
         val provider = ProcessCameraProvider.getInstance(context).await()
         provider.unbindAll()
-        val cam = provider.bindToLifecycle(
-            owner,
-            CameraSelector.DEFAULT_BACK_CAMERA,
-            preview,
-            imageCapture,
+        val cam = try {
+            provider.bindToLifecycle(
+                owner,
+                CameraSelector.DEFAULT_BACK_CAMERA,
+                preview,
+                imageCapture,
+                videoCapture,
+            ).also { videoSupported = true }
+        } catch (e: IllegalArgumentException) {
+            // The three-way combination isn't supported here: keep the
+            // stream and photos, give up video.
+            Log.w(TAG, "Preview + ImageCapture + VideoCapture not supported, binding without video", e)
+            provider.unbindAll()
+            videoSupported = false
+            provider.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageCapture)
+        }
+        Log.i(
+            TAG,
+            "Bound: preview=${preview.resolutionInfo?.resolution} " +
+                "photo=${imageCapture.resolutionInfo?.resolution} " +
+                "video=${if (videoSupported) videoCapture.resolutionInfo?.resolution else "unbound"}",
         )
         camera = cam
         // A fresh binding starts back at 1x, and by the time a new owner
@@ -196,6 +236,19 @@ class CameraStreamer(
                 },
             )
         }
+
+    /** Starts recording; [onEvent] gets CameraX's Start/Status/Finalize events on the main thread. */
+    @SuppressLint("MissingPermission") // withAudio is only true once RECORD_AUDIO is granted
+    fun startRecording(
+        output: MediaStoreOutputOptions,
+        withAudio: Boolean,
+        onEvent: (VideoRecordEvent) -> Unit,
+    ): Recording {
+        check(videoSupported) { "Video isn't supported on this camera" }
+        var pending = recorder.prepareRecording(context, output)
+        if (withAudio) pending = pending.withAudioEnabled()
+        return pending.start(mainExecutor) { onEvent(it) }
+    }
 
     fun release() {
         textureHelper.stopListening()

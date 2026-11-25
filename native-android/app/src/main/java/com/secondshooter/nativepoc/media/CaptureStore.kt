@@ -8,6 +8,7 @@ import android.net.Uri
 import android.provider.MediaStore
 import android.util.Base64
 import androidx.camera.core.ImageCapture
+import androidx.camera.video.MediaStoreOutputOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -16,13 +17,28 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Where photos go. For now always the camera roll (Pictures/SecondShooter);
- * Phase 4 adds the user's chosen folder, with this as the fallback.
+ * Where captures go. For now always the camera roll (Pictures/SecondShooter
+ * and Movies/SecondShooter); Phase 4 adds the user's chosen folder, with this
+ * as the fallback.
  */
-class PhotoStore(private val context: Context) {
+class CaptureStore(private val context: Context) {
+
+    private fun newName() = "SS_" + SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+
+    fun newVideoOutput(): MediaStoreOutputOptions {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, newName())
+            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "Movies/SecondShooter")
+        }
+        return MediaStoreOutputOptions.Builder(
+            context.contentResolver,
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+        ).setContentValues(values).build()
+    }
 
     fun newPhotoOutput(): ImageCapture.OutputFileOptions {
-        val name = "SS_" + SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+        val name = newName()
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, name)
             put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")

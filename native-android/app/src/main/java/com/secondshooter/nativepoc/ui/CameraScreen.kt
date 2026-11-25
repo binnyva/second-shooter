@@ -39,6 +39,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -49,6 +51,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.secondshooter.nativepoc.camera.Lenses
+import com.secondshooter.nativepoc.protocol.CaptureMode
 import com.secondshooter.nativepoc.session.CameraSessionViewModel
 import com.secondshooter.nativepoc.signaling.SessionIds
 import org.webrtc.RendererCommon
@@ -74,6 +77,15 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
     LaunchedEffect(hasCamera, lifecycleOwner) {
         if (hasCamera) viewModel.bindCamera(lifecycleOwner)
         else requestCamera.launch(Manifest.permission.CAMERA)
+    }
+
+    val micPermissionRequest by viewModel.micPermissionRequest.collectAsStateWithLifecycle()
+    val requestMic = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+        viewModel::onMicPermissionResult,
+    )
+    LaunchedEffect(micPermissionRequest) {
+        if (micPermissionRequest) requestMic.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     val view = LocalView.current
@@ -124,7 +136,9 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
                 }
                 ui.lastEvent?.let { Text(it, color = Color(0xFFFFE08A), fontSize = 12.sp) }
             }
-            IconButton(onClick = onOpenSettings) {
+            // Leaving the camera screen stops the camera, which would end a
+            // recording; settings wait until it's done.
+            IconButton(onClick = onOpenSettings, enabled = !ui.isRecording) {
                 Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = Color.White)
             }
         }
@@ -165,15 +179,89 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit) 
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Box(
-                Modifier
-                    .size(72.dp)
-                    .border(4.dp, Color.White, CircleShape)
-                    .padding(8.dp)
-                    .clip(CircleShape)
-                    .background(Color.White)
-                    .clickable(onClick = viewModel::takePhotoFromUi)
+            if (ui.videoSupported) {
+                ModeSelector(
+                    mode = ui.captureMode,
+                    enabled = !ui.isRecording,
+                    onSelect = viewModel::setCaptureModeFromUi,
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+            if (ui.isRecording) {
+                Text(
+                    "● %d:%02d".format(ui.recordedSeconds / 60, ui.recordedSeconds % 60),
+                    color = Color(0xFFFF5252),
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            Box(contentAlignment = Alignment.Center) {
+                Shutter(
+                    mode = ui.captureMode,
+                    recording = ui.isRecording,
+                    onClick = viewModel::shutterFromUi,
+                )
+                if (ui.isRecording) {
+                    // A still mid-recording, like the system camera offers.
+                    // The web remote locks itself to video while recording,
+                    // so this is the only way to ask for one.
+                    Box(
+                        Modifier
+                            .padding(start = 150.dp)
+                            .size(44.dp)
+                            .border(3.dp, Color.White, CircleShape)
+                            .padding(6.dp)
+                            .clip(CircleShape)
+                            .background(Color.White)
+                            .semantics { contentDescription = "Take a photo while recording" }
+                            .clickable(onClick = viewModel::takePhotoFromUi)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModeSelector(mode: CaptureMode, enabled: Boolean, onSelect: (CaptureMode) -> Unit) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .background(Color(0x99000000))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        listOf(CaptureMode.PHOTO to "Photo", CaptureMode.VIDEO to "Video").forEach { (value, label) ->
+            val selected = mode == value
+            Text(
+                label,
+                color = if (selected) Color.Black else Color.White,
+                fontSize = 14.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(if (selected) Color.White else Color.Transparent)
+                    .clickable(enabled = enabled) { onSelect(value) }
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
             )
+        }
+    }
+}
+
+@Composable
+private fun Shutter(mode: CaptureMode, recording: Boolean, onClick: () -> Unit) {
+    val red = Color(0xFFFF3B30)
+    Box(
+        Modifier
+            .size(72.dp)
+            .border(4.dp, Color.White, CircleShape)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            recording -> Box(Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)).background(red))
+            mode == CaptureMode.VIDEO -> Box(Modifier.size(56.dp).clip(CircleShape).background(red))
+            else -> Box(Modifier.size(56.dp).clip(CircleShape).background(Color.White))
         }
     }
 }
