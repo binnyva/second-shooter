@@ -70,8 +70,8 @@ Source is in `app/src/main/java/com/secondshooter/app/`:
   open it directly. The camera/remote switch replaces one screen with the other,
   so leaving camera mode ends the camera session and frees the camera.
 - `ui/`: Compose screens (camera, settings) under Navigation Compose. The
-  viewfinder overlay draws the photo framing mask, the grid, the 16:9 video
-  frame and the self-timer. Volume keys reach the camera screen through
+  viewfinder (`FittedVideo`) shows the whole stream, which the camera has
+  already cropped to the aspect ratio setting, with the grid over it. Volume keys reach the camera screen through
   `MainActivity.volumeKeyListener`.
 
 ## Protocol checks

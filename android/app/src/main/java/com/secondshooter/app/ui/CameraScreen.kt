@@ -64,7 +64,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.secondshooter.app.MainActivity
@@ -76,8 +75,6 @@ import com.secondshooter.app.protocol.LensInfo
 import com.secondshooter.app.session.CameraSessionViewModel
 import com.secondshooter.app.signaling.SessionIds
 import kotlinx.coroutines.delay
-import org.webrtc.RendererCommon
-import org.webrtc.SurfaceViewRenderer
 
 // Colours from src/components/CameraControls.tsx.
 internal val White20 = Color(0x33FFFFFF)
@@ -172,27 +169,11 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit, 
     LaunchedEffect(ui.connected) { if (ui.connected) showQr = false }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        // Full screen, like vision-camera's preview. SurfaceViewRenderer crops
-        // the frame to its own aspect ratio, which is the "cover" fit.
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
-                SurfaceViewRenderer(ctx).apply {
-                    init(viewModel.eglBase.eglBaseContext, null)
-                    setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
-                    setEnableHardwareScaler(true)
-                    viewModel.videoTrack.addSink(this)
-                }
-            },
-            // The track carries the camera's true image; the front camera is
-            // shown mirrored, as every camera app does.
-            update = { renderer -> renderer.setMirror(ui.facing == CameraFacing.FRONT) },
-            onRelease = { renderer ->
-                runCatching { viewModel.videoTrack.removeSink(renderer) }
-                renderer.release()
-            },
-        )
-        ViewfinderOverlay(aspectRatio = settings.aspectRatio, grid = settings.gridOverlay)
+        // The whole shot, at the aspect ratio setting (the stream is cropped
+        // to it), so what's on screen is what gets saved.
+        FittedVideo(viewModel.eglBase, viewModel.videoTrack, mirror = ui.facing == CameraFacing.FRONT) {
+            ViewfinderGrid(settings.gridOverlay)
+        }
 
         // Top: connection state (the RN app's "Remote Connected" pill), then
         // any message, then the optional stats.

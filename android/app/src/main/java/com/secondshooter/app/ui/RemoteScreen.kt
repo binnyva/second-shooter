@@ -48,7 +48,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -63,8 +62,6 @@ import com.secondshooter.app.settings.SettingsRepository
 import com.secondshooter.app.settings.settingsDataStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.webrtc.RendererCommon
-import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
 
 /**
@@ -205,24 +202,9 @@ fun RemoteScreen(
 
 @Composable
 private fun RemoteVideo(viewModel: RemoteViewModel, track: VideoTrack, mirror: Boolean) {
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-            SurfaceViewRenderer(ctx).apply {
-                init(viewModel.eglBase.eglBaseContext, null)
-                setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
-                setEnableHardwareScaler(true)
-                track.addSink(this)
-            }
-        },
-        // The camera sends its true image; a front camera is shown mirrored,
-        // as HybridPreview and the web remote do.
-        update = { it.setMirror(mirror) },
-        onRelease = { renderer ->
-            runCatching { track.removeSink(renderer) }
-            renderer.release()
-        },
-    )
+    // The camera sends the shot cropped to its aspect ratio setting; show all
+    // of it. A front camera is shown mirrored, as the web remote does.
+    FittedVideo(viewModel.eglBase, track, mirror)
 }
 
 @Composable

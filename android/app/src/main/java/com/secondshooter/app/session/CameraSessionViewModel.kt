@@ -167,6 +167,11 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                 sendState()
             }
         }
+        // So does the aspect ratio. Re-binding stops a recording, so a change
+        // made mid-recording waits for it to finish.
+        viewModelScope.launch {
+            settings.map { it.aspectRatio }.distinctUntilChanged().collect { applyAspectRatio() }
+        }
     }
 
     /**
@@ -181,6 +186,9 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val service = CameraSessionService.running.filterNotNull().first()
             try {
+                // Bind straight at the saved ratio, not the default then again.
+                val ratio = settingsRepository.settings.first().aspectRatio
+                camera.setAspectRatio(ratio.width, ratio.height)
                 camera.bind(service)
                 if (firstBind) {
                     firstBind = false
@@ -191,6 +199,21 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 Log.e(TAG, "Camera bind failed", e)
                 _ui.update { it.copy(status = "Camera failed: ${e.message}") }
+            }
+        }
+    }
+
+    private fun applyAspectRatio() {
+        if (recording != null || startingRecording) return
+        val ratio = settings.value.aspectRatio
+        viewModelScope.launch {
+            try {
+                camera.setAspectRatio(ratio.width, ratio.height)
+                refreshCameraUi()
+                sendState()
+            } catch (e: Exception) {
+                Log.e(TAG, "Re-binding at ${ratio.wire} failed", e)
+                _ui.update { it.copy(lastEvent = "Camera failed: ${e.message}") }
             }
         }
     }
@@ -598,6 +621,7 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                     send(Response.RecordingStopped(success = true))
                 }
                 sendState()
+                applyAspectRatio()
             }
             else -> Unit
         }

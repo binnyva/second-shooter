@@ -3,10 +3,12 @@ package com.secondshooter.app.camera
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Matrix
+import android.graphics.Rect
 import android.hardware.camera2.CameraCharacteristics
 import android.net.Uri
 import android.util.Log
 import android.util.Range
+import android.util.Rational
 import android.util.Size
 import android.view.Surface
 import androidx.annotation.OptIn
@@ -18,6 +20,8 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
+import androidx.camera.core.ViewPort
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
@@ -78,6 +82,19 @@ class CameraStreamer(
     // How far the sensor-oriented image must turn to be upright. WebRTC
     // carries it as frame rotation (CVO), which the browser applies.
     @Volatile private var rotationDegrees = 0
+
+    // The part of each preview buffer inside the ViewPort (the chosen aspect
+    // ratio), in buffer pixels. Null until CameraX reports it.
+    @Volatile private var cropRect: Rect? = null
+
+    /**
+     * Width:height of everything the camera produces (stream, photos,
+     * videos), with the phone upright. A ViewPort crops all three to the same
+     * part of the sensor, so the remote sees exactly the shot. Turning the
+     * phone turns the shot: 9:16 held sideways saves 16:9.
+     */
+    var aspectRatio = Rational(9, 16)
+        private set
 
     // Front camera frames arrive mirrored (see the frame listener).
     @Volatile private var mirrorFrames = false
@@ -141,8 +158,12 @@ class CameraStreamer(
     /** Optical zoom factors of the back camera's lenses, relative to the main one. */
     private var physicalZoomRatios: List<Float> = emptyList()
 
-    var streamSize: Size? = null
-        private set
+    /** The preview buffer's size; the stream is its crop (see [streamSize]). */
+    private var bufferSize: Size? = null
+
+    /** What the stream sends, after the ViewPort crop, sensor-oriented. */
+    val streamSize: Size?
+        get() = cropRect?.let { Size(it.width() and 1.inv(), it.height() and 1.inv()) } ?: bufferSize
 
     private var requestedZoom: Float? = null
 
@@ -165,23 +186,35 @@ class CameraStreamer(
                 preRotate(-rotation.toFloat())
                 preTranslate(-0.5f, -0.5f)
             }
-            val out = VideoFrame(
-                buffer.applyTransformMatrix(upright, buffer.width, buffer.height),
-                rotation,
-                frame.timestampNs,
-            )
+            val uprightBuffer = buffer.applyTransformMatrix(upright, buffer.width, buffer.height)
+            // Then crop to the ViewPort. cropRect is in the Surface's own
+            // (sensor-shaped) coordinates, which is what uprightBuffer is.
+            val crop = cropRect
+            val cropped = if (crop == null || crop.width() <= 0 || crop.height() <= 0 ||
+                (crop.width() == buffer.width && crop.height() == buffer.height)
+            ) {
+                uprightBuffer
+            } else {
+                // Even sides: the encoders want them.
+                val w = crop.width() and 1.inv()
+                val h = crop.height() and 1.inv()
+                uprightBuffer.cropAndScale(crop.left, crop.top, w, h, w, h)
+                    .also { uprightBuffer.release() }
+            }
+            val out = VideoFrame(cropped, rotation, frame.timestampNs)
             videoSource.capturerObserver.onFrameCaptured(out)
             out.release()
         }
 
         preview.setSurfaceProvider(mainExecutor) { request ->
             val size = request.resolution
-            streamSize = size
+            bufferSize = size
             Log.i(TAG, "Preview surface requested: ${size.width}x${size.height}")
             textureHelper.setTextureSize(size.width, size.height)
             request.setTransformationInfoListener(mainExecutor) { info ->
                 rotationDegrees = info.rotationDegrees
-                Log.i(TAG, "Preview rotation: ${info.rotationDegrees}")
+                cropRect = info.cropRect
+                Log.i(TAG, "Preview rotation: ${info.rotationDegrees}, crop: ${info.cropRect.toShortString()}")
             }
             val surface = Surface(textureHelper.surfaceTexture)
             request.provideSurface(surface, mainExecutor) { surface.release() }
@@ -196,6 +229,17 @@ class CameraStreamer(
     suspend fun bind(owner: LifecycleOwner) {
         this.owner = owner
         bindCurrent(owner)
+    }
+
+    /**
+     * Sets the aspect ratio (width:height, phone upright), re-binding if the
+     * camera is already bound. Don't call while recording: re-binding stops it.
+     */
+    suspend fun setAspectRatio(width: Int, height: Int) {
+        val ratio = Rational(width, height)
+        if (ratio == aspectRatio) return
+        aspectRatio = ratio
+        owner?.let { bindCurrent(it) }
     }
 
     /** Re-binds to the other camera at 1x. Refused while recording (by the caller). */
@@ -219,9 +263,19 @@ class CameraStreamer(
         }
         mirrorFrames = facing == CameraFacing.FRONT
 
+        // The app is portrait-locked, so the ViewPort is too; captures still
+        // follow the phone through targetRotation.
+        val viewPort = ViewPort.Builder(aspectRatio, Surface.ROTATION_0).build()
+        fun group(withVideo: Boolean) = UseCaseGroup.Builder()
+            .setViewPort(viewPort)
+            .addUseCase(preview)
+            .addUseCase(imageCapture)
+            .apply { if (withVideo) addUseCase(videoCapture) }
+            .build()
+
         provider.unbindAll()
         val cam = try {
-            provider.bindToLifecycle(owner, selector, preview, imageCapture, videoCapture)
+            provider.bindToLifecycle(owner, selector, group(withVideo = true))
                 .also { videoSupported = true }
         } catch (e: IllegalArgumentException) {
             // The three-way combination isn't supported here: keep the
@@ -229,13 +283,13 @@ class CameraStreamer(
             Log.w(TAG, "Preview + ImageCapture + VideoCapture not supported, binding without video", e)
             provider.unbindAll()
             videoSupported = false
-            provider.bindToLifecycle(owner, selector, preview, imageCapture)
+            provider.bindToLifecycle(owner, selector, group(withVideo = false))
         }
         camera = cam
         if (facing == CameraFacing.BACK) physicalZoomRatios = physicalZoomRatios(cam.cameraInfo)
         Log.i(
             TAG,
-            "Bound $facing: preview=${preview.resolutionInfo?.resolution} " +
+            "Bound $facing at $aspectRatio: preview=${preview.resolutionInfo?.resolution} " +
                 "photo=${imageCapture.resolutionInfo?.resolution} " +
                 "video=${if (videoSupported) videoCapture.resolutionInfo?.resolution else "unbound"} " +
                 "lenses=$physicalZoomRatios",

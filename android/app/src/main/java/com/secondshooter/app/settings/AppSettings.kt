@@ -16,8 +16,9 @@ enum class TimerDuration(val seconds: Int) {
     }
 }
 
-enum class AspectRatioSetting(val wire: String) {
-    SQUARE("1:1"), FOUR_FIVE("4:5"), NINE_SIXTEEN("9:16");
+/** Photo, video and stream shape, as width:height with the phone upright. */
+enum class AspectRatioSetting(val wire: String, val width: Int, val height: Int) {
+    SQUARE("1:1", 1, 1), FOUR_FIVE("4:5", 4, 5), NINE_SIXTEEN("9:16", 9, 16);
 
     companion object {
         fun fromWire(value: String?) = entries.firstOrNull { it.wire == value }

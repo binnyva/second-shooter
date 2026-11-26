@@ -61,8 +61,10 @@ button:disabled {
   height: 100%;
 }
 
+/* Contain, not cover: the camera crops the stream to its aspect ratio
+   setting, so the whole picture is the shot. */
 .preview-media {
-  object-fit: cover;
+  object-fit: contain;
   background: #000;
 }
 
@@ -494,6 +496,8 @@ button:disabled {
 .modal-card img {
   border-radius: 18px;
   aspect-ratio: 3 / 4;
+  /* Photos come in the camera's aspect ratio setting; show all of it. */
+  object-fit: contain;
 }
 
 .sheet-backdrop {
