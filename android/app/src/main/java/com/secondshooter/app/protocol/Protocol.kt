@@ -101,6 +101,9 @@ sealed interface Response {
         val videoNeedsRotation: Boolean? = null,
         val previewZoomLimited: Boolean? = null,
         val streamMode: StreamMode? = null,
+        /** The current camera's zoom range, for clamping a pinch on the remote. */
+        val minZoom: Double? = null,
+        val maxZoom: Double? = null,
     ) : Response
 
     @Serializable @SerialName("ERROR")

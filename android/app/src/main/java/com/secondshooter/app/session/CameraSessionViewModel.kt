@@ -750,6 +750,8 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                 videoNeedsRotation = false,
                 previewZoomLimited = false,
                 streamMode = StreamMode.WEBRTC,
+                minZoom = camera.zoomRange.start.toDouble(),
+                maxZoom = camera.zoomRange.endInclusive.toDouble(),
             )
         )
     }

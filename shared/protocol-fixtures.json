@@ -32,7 +32,9 @@
       ],
       "videoNeedsRotation": false,
       "previewZoomLimited": false,
-      "streamMode": "webrtc"
+      "streamMode": "webrtc",
+      "minZoom": 0.5,
+      "maxZoom": 30
     },
     {
       "type": "STATE_UPDATE",

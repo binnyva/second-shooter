@@ -13,6 +13,10 @@ import { parseSessionIdFromInput } from '@shared/session-link';
 import { db, ensureSignedIn } from './lib/firebase';
 import { BrowserSignalingClient } from './lib/signaling';
 import { BrowserWebRTCClient } from './lib/webrtc';
+import { formatZoom, usePinchZoom } from './lib/pinchZoom';
+
+/** How often a pinch sends SET_ZOOM; the last one goes when the fingers lift. */
+const PINCH_SEND_INTERVAL_MS = 100;
 
 const DEFAULT_STATE: CameraState = {
   zoom: 1,
@@ -124,10 +128,16 @@ export default function App() {
   const rtcRef = useRef<BrowserWebRTCClient | null>(null);
   const signalingRef = useRef<BrowserSignalingClient | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const stageRef = useRef<HTMLElement | null>(null);
+  // Mid-pinch the camera's STATE_UPDATEs lag the fingers; keep the zoom being asked for.
+  const pinchingRef = useRef(false);
+  const lastPinchSentRef = useRef(0);
+  const pinchTargetRef = useRef(1);
 
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const [remoteState, setRemoteState] = useState<CameraState>(DEFAULT_STATE);
   const [remoteLenses, setRemoteLenses] = useState<LensInfo[]>([]);
+  const [zoomRange, setZoomRange] = useState<{ min: number; max: number } | null>(null);
   const [streamMode, setStreamMode] = useState<StreamMode>('webrtc');
   const [latestFrame, setLatestFrame] = useState<FrameDataMessage | null>(null);
   const [lastPhotoUri, setLastPhotoUri] = useState<string | null>(null);
@@ -210,8 +220,13 @@ export default function App() {
           setLastPhotoUri(`data:image/jpeg;base64,${response.data}`);
           return;
         case 'STATE_UPDATE':
-          setRemoteState(response.state);
+          setRemoteState((prev) =>
+            pinchingRef.current ? { ...response.state, zoom: prev.zoom } : response.state,
+          );
           setRemoteLenses(response.lenses ?? []);
+          if (response.minZoom !== undefined && response.maxZoom !== undefined) {
+            setZoomRange({ min: response.minZoom, max: response.maxZoom });
+          }
           setVideoNeedsRotation(response.videoNeedsRotation ?? false);
           setPreviewZoomLimited(response.previewZoomLimited ?? false);
           setStreamMode(response.streamMode ?? 'webrtc');
@@ -364,6 +379,47 @@ export default function App() {
     rtcRef.current?.sendCommand(command);
   };
 
+  // The camera's range, or (from an older camera) the lens buttons' span
+  // up to at least 10x; the camera clamps whatever it's sent anyway.
+  const backLensZooms = remoteLenses.filter((lens) => lens.id !== 'selfie').map((lens) => lens.zoom);
+  const pinchRange = zoomRange ?? {
+    min: backLensZooms.length > 0 ? Math.min(...backLensZooms) : 1,
+    max: Math.max(10, ...backLensZooms),
+  };
+
+  const pinchZoom = usePinchZoom(stageRef, {
+    enabled: canControl,
+    zoom: remoteState.zoom,
+    min: pinchRange.min,
+    max: pinchRange.max,
+    onZoom: (zoom) => {
+      pinchingRef.current = true;
+      pinchTargetRef.current = zoom;
+      setRemoteState((prev) => ({ ...prev, zoom }));
+      const now = Date.now();
+      if (now - lastPinchSentRef.current >= PINCH_SEND_INTERVAL_MS) {
+        lastPinchSentRef.current = now;
+        sendCommand({ type: 'SET_ZOOM', level: zoom });
+      }
+    },
+    onEnd: () => {
+      pinchingRef.current = false;
+      lastPinchSentRef.current = 0;
+      sendCommand({ type: 'SET_ZOOM', level: pinchTargetRef.current });
+    },
+  });
+
+  // The readout stays up a second after the pinch ends.
+  const [zoomReadout, setZoomReadout] = useState<number | null>(null);
+  useEffect(() => {
+    if (pinchZoom !== null) {
+      setZoomReadout(pinchZoom);
+      return;
+    }
+    const timer = window.setTimeout(() => setZoomReadout(null), 1000);
+    return () => window.clearTimeout(timer);
+  }, [pinchZoom]);
+
   const handleReconnect = () => {
     setShowUtilitySheet(false);
     setReconnectNonce((value) => value + 1);
@@ -427,7 +483,7 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <section className="remote-stage">
+      <section className="remote-stage" ref={stageRef}>
         {streamMode === 'webrtc' && remoteStream ? (
           <video
             ref={videoRef}
@@ -456,6 +512,12 @@ export default function App() {
                 ? 'Keep this page open while the camera phone is waiting.'
                 : 'Open this page from a valid QR session link.'}
             </span>
+          </div>
+        ) : null}
+
+        {zoomReadout !== null ? (
+          <div className={`floating-pill zoom-readout ${pinchZoom === null ? 'fading' : ''}`}>
+            {formatZoom(zoomReadout)}×
           </div>
         ) : null}
 

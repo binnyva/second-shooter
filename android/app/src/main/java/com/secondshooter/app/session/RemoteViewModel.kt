@@ -3,6 +3,7 @@ package com.secondshooter.app.session
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
@@ -51,6 +52,8 @@ data class RemoteUiState(
         isRecording = false,
     ),
     val lenses: List<LensInfo> = emptyList(),
+    /** The camera's zoom range; null until it says (older cameras never do). */
+    val zoomRange: ClosedFloatingPointRange<Float>? = null,
     val streamMode: StreamMode = StreamMode.WEBRTC,
     val hasVideo: Boolean = false,
     /** Reconnecting for longer than a blip: cover the stale image. */
@@ -211,9 +214,14 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun handle(response: Response) {
         when (response) {
             is Response.StateUpdate -> _ui.update {
+                val min = response.minZoom
+                val max = response.maxZoom
                 it.copy(
-                    camera = response.state,
+                    // Mid-pinch the camera's answers lag the fingers; keep
+                    // the zoom being asked for until the pinch ends.
+                    camera = if (pinching) response.state.copy(zoom = it.camera.zoom) else response.state,
                     lenses = response.lenses ?: it.lenses,
+                    zoomRange = if (min != null && max != null) min.toFloat()..max.toFloat() else it.zoomRange,
                     streamMode = response.streamMode ?: it.streamMode,
                 )
             }
@@ -277,6 +285,39 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         send(Command.SetZoom(lens.zoom))
     }
 
+    /**
+     * The range a pinch is kept to. Without the camera's own, the lens
+     * buttons' span; the camera clamps whatever it's sent anyway.
+     */
+    val zoomRange: ClosedFloatingPointRange<Float>
+        get() {
+            _ui.value.zoomRange?.let { return it }
+            val back = _ui.value.lenses.filter { it.id != "selfie" }.map { it.zoom.toFloat() }
+            return (back.minOrNull() ?: 1f)..(back.maxOrNull() ?: 1f).coerceAtLeast(FALLBACK_MAX_ZOOM)
+        }
+
+    private var pinching = false
+    private var lastPinchSentAt = 0L
+
+    /** One step of a pinch on the video: SET_ZOOM at most every [PINCH_SEND_INTERVAL_MS], and once at the end. */
+    fun pinchZoom(level: Float) {
+        if (!connected) return
+        pinching = true
+        _ui.update { it.copy(camera = it.camera.copy(zoom = level.toDouble())) }
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastPinchSentAt >= PINCH_SEND_INTERVAL_MS) {
+            lastPinchSentAt = now
+            send(Command.SetZoom(level.toDouble()))
+        }
+    }
+
+    fun pinchEnded() {
+        if (!pinching) return
+        pinching = false
+        lastPinchSentAt = 0
+        if (connected) send(Command.SetZoom(_ui.value.camera.zoom))
+    }
+
     // --- Photos ---------------------------------------------------------
 
     private suspend fun addPhoto(base64: String, timestamp: Long) {
@@ -337,5 +378,9 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         private const val TAG = "SSRemote"
         private const val MAX_PHOTOS = 20
         private const val STALLED_RECONNECT_MS = 8000L
+        private const val PINCH_SEND_INTERVAL_MS = 100L
+
+        /** A pinch's ceiling when the camera doesn't send its range. */
+        private const val FALLBACK_MAX_ZOOM = 10f
     }
 }

@@ -48,9 +48,28 @@ button:disabled {
   min-height: 100vh;
   min-height: 100dvh;
   overflow: hidden;
+  /* Pinch zooms the camera, not the page (see lib/pinchZoom.ts). */
+  touch-action: none;
   background:
     linear-gradient(180deg, rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.24)),
     #000;
+}
+
+.floating-pill.zoom-readout {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  font-size: 16px;
+  font-weight: 600;
+  pointer-events: none;
+  transition: opacity 0.3s;
+}
+
+.floating-pill.zoom-readout.fading {
+  opacity: 0;
+  transition-delay: 0.7s;
 }
 
 .preview-media,

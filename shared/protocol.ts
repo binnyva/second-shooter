@@ -59,6 +59,10 @@ export type Response =
       videoNeedsRotation?: boolean;
       previewZoomLimited?: boolean;
       streamMode?: StreamMode;
+      // The current camera's zoom range, so a remote can clamp a pinch.
+      // Older cameras don't send it.
+      minZoom?: number;
+      maxZoom?: number;
     }
   | { type: 'ERROR'; message: string }
   // The camera device is mid-capture, so the live preview is dead: WebRTC and

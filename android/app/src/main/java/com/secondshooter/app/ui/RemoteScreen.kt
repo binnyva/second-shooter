@@ -108,9 +108,29 @@ fun RemoteScreen(
     val showVideo = ui.streamMode == StreamMode.WEBRTC && ui.hasVideo && currentTrack != null &&
         (ui.phase == RemotePhase.CONNECTED || ui.phase == RemotePhase.RECONNECTING)
 
+    val pinch = rememberPinchZoomState(
+        zoom = { ui.camera.zoom.toFloat() },
+        range = { viewModel.zoomRange },
+        stops = {
+            if (ui.camera.facing == CameraFacing.BACK) {
+                ui.lenses.filter { it.id != "selfie" }.map { it.zoom.toFloat() }
+            } else {
+                emptyList()
+            }
+        },
+        onZoom = viewModel::pinchZoom,
+        onEnd = viewModel::pinchEnded,
+    )
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (showVideo) {
-            RemoteVideo(viewModel, currentTrack!!, mirror = ui.camera.facing == CameraFacing.FRONT)
+            RemoteVideo(
+                viewModel,
+                currentTrack!!,
+                mirror = ui.camera.facing == CameraFacing.FRONT,
+                modifier = if (connected) Modifier.pinchToZoom(pinch) else Modifier,
+            )
+            PinchZoomReadout(pinch, Modifier.align(Alignment.Center))
         } else {
             Placeholder(ui.phase, ui.streamMode, ui.failure)
         }
@@ -201,10 +221,10 @@ fun RemoteScreen(
 }
 
 @Composable
-private fun RemoteVideo(viewModel: RemoteViewModel, track: VideoTrack, mirror: Boolean) {
+private fun RemoteVideo(viewModel: RemoteViewModel, track: VideoTrack, mirror: Boolean, modifier: Modifier) {
     // The camera sends the shot cropped to its aspect ratio setting; show all
     // of it. A front camera is shown mirrored, as the web remote does.
-    FittedVideo(viewModel.eglBase, track, mirror)
+    FittedVideo(viewModel.eglBase, track, mirror, modifier)
 }
 
 @Composable
