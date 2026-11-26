@@ -71,13 +71,11 @@ function getLiveLabel(
   return 'Offline';
 }
 
+// Material Icons Outlined "photo_library", the app's empty-thumbnail icon.
 function PhotoIcon({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="M7 5.5a2 2 0 0 1 1.6-.8h1.2l1.15 1.55a1.3 1.3 0 0 0 1.05.53h3.37A2.6 2.6 0 0 1 18 9.4v8A2.6 2.6 0 0 1 15.4 20H8.6A2.6 2.6 0 0 1 6 17.4v-8c0-.73.3-1.38.78-1.84Zm5 2.7a4.1 4.1 0 1 0 0 8.2 4.1 4.1 0 0 0 0-8.2Zm0 1.5a2.6 2.6 0 1 1 0 5.2 2.6 2.6 0 0 1 0-5.2Z"
-      />
+      <path fill="currentColor" d="M20,4v12L8,16L8,4h12m0,-2L8,2c-1.1,0 -2,0.9 -2,2v12c0,1.1 0.9,2 2,2h12c1.1,0 2,-0.9 2,-2L22,4c0,-1.1 -0.9,-2 -2,-2zM11.5,11.67l1.69,2.26 2.48,-3.1L19,15L9,15zM2,6v14c0,1.1 0.9,2 2,2h14v-2L4,20L4,6L2,6z" />
     </svg>
   );
 }
@@ -105,13 +103,14 @@ function RefreshIcon({ className }: IconProps) {
   );
 }
 
+// Material Icons Outlined "cameraswitch", the app's selfie lens button.
 function FlipIcon({ className }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="M7.3 8.2h7.06l-1.53-1.54a.9.9 0 1 1 1.27-1.27l3.07 3.08a.9.9 0 0 1 0 1.27l-3.07 3.08a.9.9 0 0 1-1.27-1.27l1.53-1.55H7.3a.9.9 0 0 1 0-1.8Zm9.4 5.76H9.64l1.53 1.55a.9.9 0 1 1-1.27 1.27l-3.07-3.08a.9.9 0 0 1 0-1.27L9.9 9.37a.9.9 0 1 1 1.27 1.27l-1.53 1.52h7.06a.9.9 0 0 1 0 1.8Z"
-      />
+      <path fill="currentColor" d="M16,7h-1l-1,-1h-4L9,7H8C6.9,7 6,7.9 6,9v6c0,1.1 0.9,2 2,2h8c1.1,0 2,-0.9 2,-2V9C18,7.9 17.1,7 16,7zM16,15H8V9h1.83l1,-1h2.34l1,1H16V15z" />
+      <path fill="currentColor" d="M12,12m-2,0a2,2 0,1 1,4 0a2,2 0,1 1,-4 0" />
+      <path fill="currentColor" d="M8.57,0.52L13.05,5l1.41,-1.41l-1.54,-1.54C17.7,2.46 21.53,6.24 22,11h2C23.36,3.3 15.79,-1.67 8.57,0.52z" />
+      <path fill="currentColor" d="M9.54,20.41l1.54,1.54C6.3,21.54 2.47,17.76 2,13H0c0.64,7.7 8.21,12.67 15.43,10.48L10.95,19L9.54,20.41z" />
     </svg>
   );
 }
