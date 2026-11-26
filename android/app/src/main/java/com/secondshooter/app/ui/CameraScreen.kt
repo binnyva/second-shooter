@@ -168,12 +168,27 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit, 
     // A remote connecting is the QR code's job done.
     LaunchedEffect(ui.connected) { if (ui.connected) showQr = false }
 
+    val pinch = rememberPinchZoomState(
+        zoom = { ui.zoom },
+        range = { viewModel.zoomRange },
+        stops = { if (ui.facing == CameraFacing.BACK) ui.lenses.map { it.zoom } else emptyList() },
+        onZoom = viewModel::pinchZoomFromUi,
+        onEnd = viewModel::pinchEndedFromUi,
+    )
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // The whole shot, at the aspect ratio setting (the stream is cropped
-        // to it), so what's on screen is what gets saved.
-        FittedVideo(viewModel.eglBase, viewModel.videoTrack, mirror = ui.facing == CameraFacing.FRONT) {
+        // to it), so what's on screen is what gets saved. Pinching anywhere
+        // around it zooms, the letterbox included.
+        FittedVideo(
+            viewModel.eglBase,
+            viewModel.videoTrack,
+            mirror = ui.facing == CameraFacing.FRONT,
+            modifier = Modifier.pinchToZoom(pinch),
+        ) {
             ViewfinderGrid(settings.gridOverlay)
         }
+        PinchZoomReadout(pinch, Modifier.align(Alignment.Center))
 
         // Top: connection state (the RN app's "Remote Connected" pill), then
         // any message, then the optional stats.

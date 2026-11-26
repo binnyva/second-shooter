@@ -55,7 +55,10 @@ object Lenses {
     /**
      * What STATE_UPDATE sends: "S" (selfie) first when there's a front
      * camera, then the back lenses. On the back camera exactly one lens is
-     * active: the matching one, or the closest if the zoom is in between.
+     * active: the one in use, which is the highest at or below the zoom (the
+     * lowest if the zoom is below them all). Between stops its label shows
+     * the zoom itself ("1.4" on the 1x button), as phone cameras do; its zoom
+     * stays the lens's, so tapping it goes back to the stop.
      */
     fun toLensInfo(
         back: List<Lens>,
@@ -64,10 +67,31 @@ object Lenses {
         hasFrontCamera: Boolean,
     ): List<LensInfo> {
         val onFront = facing == CameraFacing.FRONT
-        val closest = if (onFront) null else back.minByOrNull { abs(it.zoom - currentZoom) }
+        val inUse = if (onFront) null else lensInUse(back, currentZoom)
         return buildList {
             if (hasFrontCamera) add(LensInfo("selfie", "S", 1.0, onFront))
-            back.forEach { add(LensInfo(it.id, it.label, it.zoom.toDouble(), it == closest)) }
+            back.forEach {
+                val active = it == inUse
+                val label = if (active && !isActive(currentZoom, it.zoom)) formatZoom(currentZoom) else it.label
+                add(LensInfo(it.id, label, it.zoom.toDouble(), active))
+            }
+        }
+    }
+
+    fun lensInUse(back: List<Lens>, zoom: Float): Lens? =
+        back.lastOrNull { it.zoom <= zoom + ACTIVE_TOLERANCE } ?: back.firstOrNull()
+
+    /** A pinch's zoom: [current] scaled by the fingers' spread, kept to the camera's range. */
+    fun pinchedZoom(current: Float, scale: Float, range: ClosedFloatingPointRange<Float>): Float =
+        (current * scale).coerceIn(range)
+
+    /** Whether going from [from] to [to] reaches or passes one of [stops] (for a haptic tick). */
+    fun crossesStop(from: Float, to: Float, stops: List<Float>): Boolean {
+        if (from == to) return false
+        val (low, high) = if (from < to) from to to else to to from
+        return stops.any { stop ->
+            // Leaving a stop isn't crossing it; arriving at one is.
+            stop != from && stop in low..high
         }
     }
 

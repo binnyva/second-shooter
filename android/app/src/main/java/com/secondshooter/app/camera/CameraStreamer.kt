@@ -401,6 +401,21 @@ class CameraStreamer(
         return clamped
     }
 
+    /**
+     * Sets the zoom without waiting for it, for a pinch: a newer request
+     * cancels the one before, so only the latest lands. Returns the zoom
+     * asked for, clamped to the range.
+     */
+    fun requestZoom(level: Float): Float {
+        val cam = camera ?: return zoom
+        val clamped = level.coerceIn(zoomRange)
+        requestedZoom = clamped
+        // A cancelled request fails its future; nothing waits on it, and the
+        // open observer in bindCurrent covers a camera that isn't open yet.
+        cam.cameraControl.setZoomRatio(clamped)
+        return clamped
+    }
+
     /** Zoom buttons for the back camera. */
     fun backLenses(): List<Lens> {
         // The front camera's zoom range says nothing about the back's; keep

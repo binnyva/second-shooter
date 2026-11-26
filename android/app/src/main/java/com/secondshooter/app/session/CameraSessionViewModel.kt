@@ -5,6 +5,7 @@ import android.app.Application
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.PowerManager
+import android.os.SystemClock
 import android.view.OrientationEventListener
 import android.util.Log
 import androidx.camera.video.Recording
@@ -89,6 +90,9 @@ data class CameraUiState(
 
 /** The camera opens on the main lens. (The prototype started at 2x to test zoomed streaming.) */
 const val INITIAL_ZOOM = 1f
+
+/** How often a pinch on the camera tells the remote the zoom. */
+private const val PINCH_STATE_INTERVAL_MS = 100L
 
 /**
  * Owns everything that must outlive the activity: the camera use cases, the
@@ -486,6 +490,31 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * One step of a pinch on this phone. Works while recording: zoom doesn't
+     * re-bind the camera. The remote hears at most every [PINCH_STATE_INTERVAL_MS]
+     * meanwhile, and once more from [pinchEndedFromUi].
+     */
+    fun pinchZoomFromUi(level: Float) {
+        val zoom = camera.requestZoom(level)
+        _ui.update { it.copy(zoom = zoom) }
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastPinchStateAt >= PINCH_STATE_INTERVAL_MS) {
+            lastPinchStateAt = now
+            sendState(zoom)
+        }
+    }
+
+    fun pinchEndedFromUi() {
+        lastPinchStateAt = 0
+        sendState(_ui.value.zoom)
+    }
+
+    private var lastPinchStateAt = 0L
+
+    /** The bound camera's zoom range, read live (it's 1..1 until the camera reports it). */
+    val zoomRange: ClosedFloatingPointRange<Float> get() = camera.zoomRange
+
+    /**
      * A lens button on this phone: "S" switches to the front camera; a back
      * lens switches back first if needed, then zooms. In order, so no delay
      * is needed between the two (the RN app waited 500ms).
@@ -702,8 +731,11 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
         active.stop()
     }
 
-    private fun sendState() {
-        val zoom = camera.zoom
+    /**
+     * [zoom] defaults to what CameraX reports; mid-pinch that lags the
+     * request, so the pinch passes the zoom it asked for.
+     */
+    private fun sendState(zoom: Float = camera.zoom) {
         send(
             Response.StateUpdate(
                 state = CameraState(

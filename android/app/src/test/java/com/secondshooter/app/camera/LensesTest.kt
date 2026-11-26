@@ -65,9 +65,44 @@ class LensesTest {
     }
 
     @Test
-    fun inBetweenZoomMarksTheClosestLens() {
+    fun inBetweenZoomMarksTheLensInUseWithTheZoomAsItsLabel() {
         val info = Lenses.toLensInfo(pixel, 3.8f, CameraFacing.BACK, hasFrontCamera = true)
+        val active = info.single { it.isActive }
+        assertEquals("digital-2x", active.id)
+        assertEquals("3.8", active.label)
+        // Tapping it still goes to the stop.
+        assertEquals(2.0, active.zoom, 0.0)
+        assertEquals(listOf("S", "0.5", "3.8", "5"), info.filter { it.id != "wide" }.map { it.label })
+    }
+
+    @Test
+    fun onAStopTheLabelStaysTheLenss() {
+        val info = Lenses.toLensInfo(pixel, 4.97f, CameraFacing.BACK, hasFrontCamera = true)
         assertEquals("telephoto-1", info.single { it.isActive }.id)
+        assertEquals("5", info.single { it.isActive }.label)
+    }
+
+    @Test
+    fun belowEveryLensTheLowestIsInUse() {
+        val oneLens = Lenses.backLenses(1f, 8f, emptyList())
+        assertEquals("wide", Lenses.lensInUse(oneLens, 0.8f)?.id)
+    }
+
+    @Test
+    fun pinchScalesAndClampsTheZoom() {
+        assertEquals(2f, Lenses.pinchedZoom(1f, 2f, 0.5f..30f))
+        assertEquals(0.5f, Lenses.pinchedZoom(0.6f, 0.5f, 0.5f..30f))
+        assertEquals(30f, Lenses.pinchedZoom(20f, 2f, 0.5f..30f))
+    }
+
+    @Test
+    fun pinchTicksOnReachingOrPassingAStop() {
+        val stops = listOf(0.5f, 1f, 2f, 5f)
+        assertEquals(true, Lenses.crossesStop(1.9f, 2.1f, stops))
+        assertEquals(true, Lenses.crossesStop(2.1f, 1.9f, stops))
+        assertEquals(true, Lenses.crossesStop(1.9f, 2f, stops))
+        assertEquals(false, Lenses.crossesStop(2f, 2.1f, stops))
+        assertEquals(false, Lenses.crossesStop(2.2f, 4f, stops))
     }
 
     @Test
