@@ -52,6 +52,7 @@ The camera/remote switch replaces one screen with the other (navigation `popUpTo
 - **Re-binding resets zoom to 1x**, and a new lifecycle owner binds after the old one already unbound. So `CameraStreamer` re-applies the last *requested* zoom rather than reading it back.
 - **Lens buttons come from the physical cameras' focal lengths** (`physicalZoomRatios`, `camera/Lenses.kt`), not a guess from max zoom. Pixels list each lens twice, the full sensor and a half-size "physical camera" that is its 2x crop mode; grouping by focal length and keeping the largest sensor leaves one per lens. Telephotos from 3x up are labelled by the nearest whole number (the Pixel's 4.51x is "5"). A digital 2x is offered unless a lens covers it.
 - **Pinch to zoom** (`ui/PinchZoom.kt`) tracks the zoom locally during the gesture and sends each step with `CameraStreamer.requestZoom`, which doesn't wait: each CameraX request cancels the one before. It works while recording. The remote hears the zoom at most every 100ms during a pinch and once at the end. Both remotes pinch the same way: `SET_ZOOM` at most every 100ms and once on release, clamped to `minZoom`/`maxZoom` from `STATE_UPDATE`, keeping their own zoom over the camera's lagging answers until the fingers lift. The web remote's stage has `touch-action: none` and blocks Safari's `gesturestart`, or the browser zooms the page. Between lens stops the lens in use (the highest at or below the zoom) shows the zoom as its label ("1.4" on the 1x button); its `zoom` stays the stop's, so tapping it goes back.
+- **Exposure** (`camera/Exposure.kt`, `ui/ExposureSlider.kt`, `web-remote/src/ExposureSlider.tsx`) is CameraX exposure compensation, sent in EV (`SET_EXPOSURE`) and rounded by the camera to its step. The slider is hidden until the viewfinder is tapped (on the camera or either remote) and hides 3s after the last touch; tapping its value resets to 0. It's re-applied after a re-bind like zoom, goes back to 0 on a camera switch and on every new session (`startSession`), and isn't a saved setting. A camera that can't adjust exposure sends no `exposure`, and the remotes then show no slider.
 
 ### Session lifetime
 
@@ -191,6 +192,7 @@ type Command =
   | { type: 'STOP_RECORDING' }
   | { type: 'SET_ZOOM'; level: number }
   | { type: 'SET_FLASH'; mode: 'off' | 'on' | 'auto' }
+  | { type: 'SET_EXPOSURE'; ev: number }
   | { type: 'SWITCH_CAMERA' }
   | { type: 'GET_STATE' }
 
@@ -200,7 +202,8 @@ type Response =
   | { type: 'RECORDING_STOPPED'; success: boolean; error?: string }
   | { type: 'STATE_UPDATE'; state: CameraState; lenses?: LensInfo[];
       videoNeedsRotation?: boolean; previewZoomLimited?: boolean;
-      streamMode?: StreamMode; minZoom?: number; maxZoom?: number }
+      streamMode?: StreamMode; minZoom?: number; maxZoom?: number;
+      exposure?: { ev: number; min: number; max: number; step: number } }
   | { type: 'ERROR'; message: string }
   | { type: 'CAPTURE_STATE'; capturing: boolean }                              // RN camera only
   | { type: 'FRAME_DATA'; frameId: number; data: string; timestamp: number }   // RN camera only

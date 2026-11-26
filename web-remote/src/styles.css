@@ -605,3 +605,69 @@ button:disabled {
     box-shadow: 0 30px 100px rgba(0, 0, 0, 0.5);
   }
 }
+
+/* Exposure slider: hidden until the picture is tapped (ExposureSlider.tsx). */
+.exposure-slider {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.exposure-track {
+  position: relative;
+  width: 56px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.exposure-line {
+  position: absolute;
+  top: 18px;
+  bottom: 18px;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.exposure-zero {
+  position: absolute;
+  left: 50%;
+  width: 16px;
+  height: 2px;
+  transform: translate(-50%, -50%);
+  background: #fff;
+}
+
+.exposure-thumb {
+  position: absolute;
+  left: 50%;
+  width: 36px;
+  height: 36px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(255, 204, 0, 0.9);
+  color: #000;
+}
+
+.exposure-value {
+  min-width: 40px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}

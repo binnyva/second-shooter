@@ -171,6 +171,9 @@ class CameraStreamer(
 
     private var requestedZoom: Float? = null
 
+    /** Exposure compensation steps asked for; re-applied like the zoom. */
+    private var requestedExposureIndex = 0
+
     // Applies requestedZoom each time the bound camera opens; see bindCurrent.
     private var openObserver: Pair<LiveData<CameraState>, Observer<CameraState>>? = null
 
@@ -268,6 +271,8 @@ class CameraStreamer(
         val currentOwner = owner ?: return facing
         facing = target
         requestedZoom = null
+        // The other camera has its own range; start it at 0 too.
+        requestedExposureIndex = 0
         bindCurrent(currentOwner)
         return facing
     }
@@ -326,6 +331,7 @@ class CameraStreamer(
         val observer = Observer<CameraState> { state ->
             if (state.type == CameraState.Type.OPEN && camera === cam) {
                 requestedZoom?.let { cam.cameraControl.setZoomRatio(it) }
+                if (requestedExposureIndex != 0) cam.cameraControl.setExposureCompensationIndex(requestedExposureIndex)
             }
         }
         cam.cameraInfo.cameraState.observe(owner, observer)
@@ -333,6 +339,8 @@ class CameraStreamer(
         // Also try now, in case the camera is already open; if it isn't,
         // setZoom leaves it to the observer.
         requestedZoom?.let { setZoom(it) }
+        // A failure here (not open yet) is covered by the observer.
+        if (requestedExposureIndex != 0) cam.cameraControl.setExposureCompensationIndex(requestedExposureIndex)
     }
 
     /**
@@ -414,6 +422,35 @@ class CameraStreamer(
         // open observer in bindCurrent covers a camera that isn't open yet.
         cam.cameraControl.setZoomRatio(clamped)
         return clamped
+    }
+
+    /** The bound camera's exposure compensation range; [ExposureRange.NONE] when it has none. */
+    val exposureRange: ExposureRange
+        get() {
+            val state = camera?.cameraInfo?.exposureState ?: return ExposureRange.NONE
+            if (!state.isExposureCompensationSupported) return ExposureRange.NONE
+            val range = state.exposureCompensationRange
+            return ExposureRange(range.lower, range.upper, state.exposureCompensationStep.toFloat())
+        }
+
+    /** The exposure compensation asked for, in EV. */
+    val exposure: Float get() = exposureRange.evFor(requestedExposureIndex)
+
+    /**
+     * Sets exposure compensation to the step nearest [ev], without waiting
+     * (a slider drag sends many; a newer one cancels the one before).
+     * Returns the EV it settled on.
+     */
+    fun requestExposure(ev: Float): Float {
+        val range = exposureRange
+        requestedExposureIndex = range.indexFor(ev)
+        camera?.cameraControl?.setExposureCompensationIndex(requestedExposureIndex)
+        return range.evFor(requestedExposureIndex)
+    }
+
+    /** Back to 0 EV, for a new session. */
+    fun resetExposure() {
+        requestExposure(0f)
     }
 
     /** Zoom buttons for the back camera. */

@@ -176,6 +176,8 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit, 
         onEnd = viewModel::pinchEndedFromUi,
     )
 
+    val exposure = rememberExposureControlState()
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // The whole shot, at the aspect ratio setting (the stream is cropped
         // to it), so what's on screen is what gets saved. Pinching anywhere
@@ -184,11 +186,21 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit, 
             viewModel.eglBase,
             viewModel.videoTrack,
             mirror = ui.facing == CameraFacing.FRONT,
-            modifier = Modifier.pinchToZoom(pinch),
+            modifier = Modifier.pinchToZoom(pinch).tapToShowExposure(exposure, enabled = true),
         ) {
             ViewfinderGrid(settings.gridOverlay)
         }
         PinchZoomReadout(pinch, Modifier.align(Alignment.Center))
+        ExposureSlider(
+            exposure,
+            ev = ui.exposure,
+            min = ui.exposureRange.minEv,
+            max = ui.exposureRange.maxEv,
+            step = ui.exposureRange.step,
+            onChange = viewModel::exposureFromUi,
+            onEnd = viewModel::exposureEndedFromUi,
+            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp),
+        )
 
         // Top: connection state (the RN app's "Remote Connected" pill), then
         // any message, then the optional stats.

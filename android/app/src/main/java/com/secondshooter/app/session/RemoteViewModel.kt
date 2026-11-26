@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.secondshooter.app.protocol.CameraFacing
+import com.secondshooter.app.protocol.ExposureInfo
 import com.secondshooter.app.protocol.CameraState
 import com.secondshooter.app.protocol.CaptureMode
 import com.secondshooter.app.protocol.Command
@@ -54,6 +55,8 @@ data class RemoteUiState(
     val lenses: List<LensInfo> = emptyList(),
     /** The camera's zoom range; null until it says (older cameras never do). */
     val zoomRange: ClosedFloatingPointRange<Float>? = null,
+    /** Null when the camera can't adjust exposure (or doesn't say). */
+    val exposure: ExposureInfo? = null,
     val streamMode: StreamMode = StreamMode.WEBRTC,
     val hasVideo: Boolean = false,
     /** Reconnecting for longer than a blip: cover the stale image. */
@@ -222,6 +225,10 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
                     camera = if (pinching) response.state.copy(zoom = it.camera.zoom) else response.state,
                     lenses = response.lenses ?: it.lenses,
                     zoomRange = if (min != null && max != null) min.toFloat()..max.toFloat() else it.zoomRange,
+                    // As with zoom, keep the EV being dragged to until the drag ends.
+                    exposure = response.exposure?.let { info ->
+                        if (draggingExposure) info.copy(ev = it.exposure?.ev ?: info.ev) else info
+                    },
                     streamMode = response.streamMode ?: it.streamMode,
                 )
             }
@@ -316,6 +323,29 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         pinching = false
         lastPinchSentAt = 0
         if (connected) send(Command.SetZoom(_ui.value.camera.zoom))
+    }
+
+    private var draggingExposure = false
+    private var lastExposureSentAt = 0L
+
+    /** One step of the exposure slider: SET_EXPOSURE at most every [PINCH_SEND_INTERVAL_MS], and once at the end. */
+    fun setExposure(ev: Float) {
+        if (!connected) return
+        draggingExposure = true
+        _ui.update { it.copy(exposure = it.exposure?.copy(ev = ev.toDouble())) }
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastExposureSentAt >= PINCH_SEND_INTERVAL_MS) {
+            lastExposureSentAt = now
+            send(Command.SetExposure(ev.toDouble()))
+        }
+    }
+
+    fun exposureEnded() {
+        if (!draggingExposure) return
+        draggingExposure = false
+        lastExposureSentAt = 0
+        val ev = _ui.value.exposure?.ev ?: return
+        if (connected) send(Command.SetExposure(ev))
     }
 
     // --- Photos ---------------------------------------------------------

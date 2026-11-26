@@ -26,12 +26,21 @@ export interface LensInfo {
   isActive: boolean;
 }
 
+// Exposure compensation in EV. The camera rounds to its nearest step.
+export interface ExposureInfo {
+  ev: number;
+  min: number;
+  max: number;
+  step: number;
+}
+
 export type Command =
   | { type: 'TAKE_PHOTO' }
   | { type: 'START_RECORDING' }
   | { type: 'STOP_RECORDING' }
   | { type: 'SET_ZOOM'; level: number }
   | { type: 'SET_FLASH'; mode: FlashMode }
+  | { type: 'SET_EXPOSURE'; ev: number }
   | { type: 'SWITCH_CAMERA' }
   | { type: 'GET_STATE' };
 
@@ -63,6 +72,8 @@ export type Response =
       // Older cameras don't send it.
       minZoom?: number;
       maxZoom?: number;
+      // Absent when the camera can't adjust exposure (or is too old to say).
+      exposure?: ExposureInfo;
     }
   | { type: 'ERROR'; message: string }
   // The camera device is mid-capture, so the live preview is dead: WebRTC and
@@ -92,6 +103,7 @@ export const COMMAND_TYPES = [
   'STOP_RECORDING',
   'SET_ZOOM',
   'SET_FLASH',
+  'SET_EXPOSURE',
   'SWITCH_CAMERA',
   'GET_STATE',
 ] as const satisfies readonly Command['type'][];

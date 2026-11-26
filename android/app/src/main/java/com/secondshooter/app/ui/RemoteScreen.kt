@@ -122,15 +122,33 @@ fun RemoteScreen(
         onEnd = viewModel::pinchEnded,
     )
 
+    val exposure = rememberExposureControlState()
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (showVideo) {
             RemoteVideo(
                 viewModel,
                 currentTrack!!,
                 mirror = ui.camera.facing == CameraFacing.FRONT,
-                modifier = if (connected) Modifier.pinchToZoom(pinch) else Modifier,
+                modifier = if (connected) {
+                    Modifier.pinchToZoom(pinch).tapToShowExposure(exposure, enabled = ui.exposure != null)
+                } else {
+                    Modifier
+                },
             )
             PinchZoomReadout(pinch, Modifier.align(Alignment.Center))
+            ui.exposure?.let { info ->
+                ExposureSlider(
+                    exposure,
+                    ev = info.ev.toFloat(),
+                    min = info.min.toFloat(),
+                    max = info.max.toFloat(),
+                    step = info.step.toFloat(),
+                    onChange = viewModel::setExposure,
+                    onEnd = viewModel::exposureEnded,
+                    modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp),
+                )
+            }
         } else {
             Placeholder(ui.phase, ui.streamMode, ui.failure)
         }

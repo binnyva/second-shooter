@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import type {
   CameraState,
   CaptureMode,
   ConnectionState,
   FlashMode,
   FrameDataMessage,
+  ExposureInfo,
   LensInfo,
   Response,
   StreamMode,
@@ -14,6 +15,7 @@ import { db, ensureSignedIn } from './lib/firebase';
 import { BrowserSignalingClient } from './lib/signaling';
 import { BrowserWebRTCClient } from './lib/webrtc';
 import { formatZoom, usePinchZoom } from './lib/pinchZoom';
+import { ExposureSlider } from './ExposureSlider';
 
 /** How often a pinch sends SET_ZOOM; the last one goes when the fingers lift. */
 const PINCH_SEND_INTERVAL_MS = 100;
@@ -138,6 +140,12 @@ export default function App() {
   const [remoteState, setRemoteState] = useState<CameraState>(DEFAULT_STATE);
   const [remoteLenses, setRemoteLenses] = useState<LensInfo[]>([]);
   const [zoomRange, setZoomRange] = useState<{ min: number; max: number } | null>(null);
+  const [exposure, setExposure] = useState<ExposureInfo | null>(null);
+  const [exposureToggles, setExposureToggles] = useState(0);
+  // As with a pinch, keep the EV being dragged to over the camera's lagging answers.
+  const draggingExposureRef = useRef(false);
+  const lastExposureSentRef = useRef(0);
+  const exposureEvRef = useRef(0);
   const [streamMode, setStreamMode] = useState<StreamMode>('webrtc');
   const [latestFrame, setLatestFrame] = useState<FrameDataMessage | null>(null);
   const [lastPhotoUri, setLastPhotoUri] = useState<string | null>(null);
@@ -227,6 +235,10 @@ export default function App() {
           if (response.minZoom !== undefined && response.maxZoom !== undefined) {
             setZoomRange({ min: response.minZoom, max: response.maxZoom });
           }
+          setExposure((prev) => {
+            const next = response.exposure ?? null;
+            return next && draggingExposureRef.current && prev ? { ...next, ev: prev.ev } : next;
+          });
           setVideoNeedsRotation(response.videoNeedsRotation ?? false);
           setPreviewZoomLimited(response.previewZoomLimited ?? false);
           setStreamMode(response.streamMode ?? 'webrtc');
@@ -420,6 +432,32 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [pinchZoom]);
 
+  const handleExposureChange = (ev: number) => {
+    draggingExposureRef.current = true;
+    exposureEvRef.current = ev;
+    setExposure((prev) => (prev ? { ...prev, ev } : prev));
+    const now = Date.now();
+    if (now - lastExposureSentRef.current >= PINCH_SEND_INTERVAL_MS) {
+      lastExposureSentRef.current = now;
+      sendCommand({ type: 'SET_EXPOSURE', ev });
+    }
+  };
+
+  const handleExposureEnd = () => {
+    draggingExposureRef.current = false;
+    lastExposureSentRef.current = 0;
+    sendCommand({ type: 'SET_EXPOSURE', ev: exposureEvRef.current });
+  };
+
+  // A tap on the picture, not on a control, shows or hides the exposure slider.
+  const handleStageClick = (event: MouseEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement;
+    if (!canControl || !exposure || target.closest('button, input, .controls-scrim, .top-chrome, .exposure-slider')) {
+      return;
+    }
+    setExposureToggles((n) => n + 1);
+  };
+
   const handleReconnect = () => {
     setShowUtilitySheet(false);
     setReconnectNonce((value) => value + 1);
@@ -483,7 +521,7 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <section className="remote-stage" ref={stageRef}>
+      <section className="remote-stage" ref={stageRef} onClick={handleStageClick}>
         {streamMode === 'webrtc' && remoteStream ? (
           <video
             ref={videoRef}
@@ -519,6 +557,15 @@ export default function App() {
           <div className={`floating-pill zoom-readout ${pinchZoom === null ? 'fading' : ''}`}>
             {formatZoom(zoomReadout)}×
           </div>
+        ) : null}
+
+        {canControl && exposure ? (
+          <ExposureSlider
+            info={exposure}
+            toggleCount={exposureToggles}
+            onChange={handleExposureChange}
+            onEnd={handleExposureEnd}
+          />
         ) : null}
 
         <div className="top-chrome">

@@ -57,6 +57,15 @@ data class LensInfo(
     val isActive: Boolean,
 )
 
+/** Exposure compensation in EV; the camera rounds to its nearest step. */
+@Serializable
+data class ExposureInfo(
+    val ev: Double,
+    val min: Double,
+    val max: Double,
+    val step: Double,
+)
+
 /** Remote → camera. */
 @Serializable
 sealed interface Command {
@@ -74,6 +83,9 @@ sealed interface Command {
 
     @Serializable @SerialName("SET_FLASH")
     data class SetFlash(val mode: FlashMode) : Command
+
+    @Serializable @SerialName("SET_EXPOSURE")
+    data class SetExposure(val ev: Double) : Command
 
     @Serializable @SerialName("SWITCH_CAMERA")
     data object SwitchCamera : Command
@@ -104,6 +116,8 @@ sealed interface Response {
         /** The current camera's zoom range, for clamping a pinch on the remote. */
         val minZoom: Double? = null,
         val maxZoom: Double? = null,
+        /** Absent when the camera can't adjust exposure. */
+        val exposure: ExposureInfo? = null,
     ) : Response
 
     @Serializable @SerialName("ERROR")

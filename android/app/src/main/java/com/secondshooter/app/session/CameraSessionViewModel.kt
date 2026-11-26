@@ -18,6 +18,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import com.secondshooter.app.camera.CameraStreamer
+import com.secondshooter.app.camera.ExposureRange
 import com.secondshooter.app.camera.Lens
 import com.secondshooter.app.camera.Lenses
 import com.secondshooter.app.camera.captureRotationFor
@@ -29,6 +30,7 @@ import com.secondshooter.app.protocol.CameraState
 import com.secondshooter.app.protocol.CaptureMode
 import com.secondshooter.app.protocol.Command
 import com.secondshooter.app.protocol.DecodedCommand
+import com.secondshooter.app.protocol.ExposureInfo
 import com.secondshooter.app.protocol.Protocol
 import com.secondshooter.app.protocol.Response
 import com.secondshooter.app.protocol.StreamMode
@@ -75,6 +77,9 @@ data class CameraUiState(
     val canRestart: Boolean = false,
     val zoom: Float = INITIAL_ZOOM,
     val lenses: List<Lens> = emptyList(),
+    /** Exposure compensation in EV, and what the camera allows. */
+    val exposure: Float = 0f,
+    val exposureRange: ExposureRange = ExposureRange.NONE,
     val stats: String? = null,
     val lastEvent: String? = null,
     val captureMode: CaptureMode = CaptureMode.PHOTO,
@@ -287,6 +292,9 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
         sessionJob?.cancel()
         sessionJob = viewModelScope.launch {
             teardownSession()
+            // Each session starts at 0 EV: a leftover offset is easy to miss.
+            camera.resetExposure()
+            _ui.update { it.copy(exposure = 0f) }
             _ui.update {
                 it.copy(status = "Creating session…", sessionId = null, connected = false, canRestart = false)
             }
@@ -433,6 +441,11 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
         when (command) {
             Command.GetState -> sendState()
             is Command.SetZoom -> setZoom(command.level.toFloat())
+            is Command.SetExposure -> {
+                val ev = camera.requestExposure(command.ev.toFloat())
+                _ui.update { it.copy(exposure = ev) }
+                sendState()
+            }
             Command.TakePhoto -> takePhoto(fromRemote = true)
             Command.StartRecording -> requestStartRecording()
             Command.StopRecording -> stopRecording()
@@ -446,6 +459,8 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(
                 zoom = camera.zoom,
                 lenses = camera.backLenses(),
+                exposure = camera.exposure,
+                exposureRange = camera.exposureRange,
                 videoSupported = camera.videoSupported,
                 facing = camera.facing,
                 hasFrontCamera = camera.hasFrontCamera,
@@ -497,19 +512,35 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     fun pinchZoomFromUi(level: Float) {
         val zoom = camera.requestZoom(level)
         _ui.update { it.copy(zoom = zoom) }
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastPinchStateAt >= PINCH_STATE_INTERVAL_MS) {
-            lastPinchStateAt = now
-            sendState(zoom)
-        }
+        sendStateThrottled()
     }
 
-    fun pinchEndedFromUi() {
-        lastPinchStateAt = 0
+    fun pinchEndedFromUi() = gestureEnded()
+
+    /** One step of a drag on the exposure slider; the remote hears as with a pinch. */
+    fun exposureFromUi(ev: Float) {
+        val settled = camera.requestExposure(ev)
+        _ui.update { it.copy(exposure = settled) }
+        sendStateThrottled()
+    }
+
+    fun exposureEndedFromUi() = gestureEnded()
+
+    private fun gestureEnded() {
+        lastGestureStateAt = 0
         sendState(_ui.value.zoom)
     }
 
-    private var lastPinchStateAt = 0L
+    /** Mid-gesture, STATE_UPDATE at most every [PINCH_STATE_INTERVAL_MS]. */
+    private fun sendStateThrottled() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastGestureStateAt >= PINCH_STATE_INTERVAL_MS) {
+            lastGestureStateAt = now
+            sendState(_ui.value.zoom)
+        }
+    }
+
+    private var lastGestureStateAt = 0L
 
     /** The bound camera's zoom range, read live (it's 1..1 until the camera reports it). */
     val zoomRange: ClosedFloatingPointRange<Float> get() = camera.zoomRange
@@ -752,6 +783,14 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                 streamMode = StreamMode.WEBRTC,
                 minZoom = camera.zoomRange.start.toDouble(),
                 maxZoom = camera.zoomRange.endInclusive.toDouble(),
+                exposure = camera.exposureRange.takeIf { it.supported }?.let {
+                    ExposureInfo(
+                        ev = camera.exposure.toDouble(),
+                        min = it.minEv.toDouble(),
+                        max = it.maxEv.toDouble(),
+                        step = it.step.toDouble(),
+                    )
+                },
             )
         )
     }
