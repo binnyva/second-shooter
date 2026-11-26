@@ -163,7 +163,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                 onSelect = { v -> viewModel.update { it.copy(timer = v) } },
             )
             ChoiceRow(
-                title = "Photo framing",
+                title = "Aspect ratio",
                 subtitle = "Crops photos, videos and the preview to this shape",
                 options = AspectRatioSetting.entries,
                 selected = settings.aspectRatio,
