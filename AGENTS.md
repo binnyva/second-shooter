@@ -51,7 +51,7 @@ The camera/remote switch replaces one screen with the other (navigation `popUpTo
 - **The stream stays portrait**, as the portrait-locked RN app's did. Only captures follow the device's orientation (`OrientationEventListener` → `targetRotation`); a recording keeps the rotation it started with.
 - **Re-binding resets zoom to 1x**, and a new lifecycle owner binds after the old one already unbound. So `CameraStreamer` re-applies the last *requested* zoom rather than reading it back.
 - **Lens buttons come from the physical cameras' focal lengths** (`physicalZoomRatios`, `camera/Lenses.kt`), not a guess from max zoom. Pixels list each lens twice, the full sensor and a half-size "physical camera" that is its 2x crop mode; grouping by focal length and keeping the largest sensor leaves one per lens. Telephotos from 3x up are labelled by the nearest whole number (the Pixel's 4.51x is "5"). A digital 2x is offered unless a lens covers it.
-- **Pinch to zoom** (`ui/PinchZoom.kt`) tracks the zoom locally during the gesture and sends each step with `CameraStreamer.requestZoom`, which doesn't wait: each CameraX request cancels the one before. It works while recording. The remote hears the zoom at most every 100ms during a pinch and once at the end. Between lens stops the lens in use (the highest at or below the zoom) shows the zoom as its label ("1.4" on the 1x button); its `zoom` stays the stop's, so tapping it goes back.
+- **Pinch to zoom** (`ui/PinchZoom.kt`) tracks the zoom locally during the gesture and sends each step with `CameraStreamer.requestZoom`, which doesn't wait: each CameraX request cancels the one before. It works while recording. The remote hears the zoom at most every 100ms during a pinch and once at the end. Both remotes pinch the same way: `SET_ZOOM` at most every 100ms and once on release, clamped to `minZoom`/`maxZoom` from `STATE_UPDATE`, keeping their own zoom over the camera's lagging answers until the fingers lift. The web remote's stage has `touch-action: none` and blocks Safari's `gesturestart`, or the browser zooms the page. Between lens stops the lens in use (the highest at or below the zoom) shows the zoom as its label ("1.4" on the 1x button); its `zoom` stays the stop's, so tapping it goes back.
 
 ### Session lifetime
 
@@ -200,7 +200,7 @@ type Response =
   | { type: 'RECORDING_STOPPED'; success: boolean; error?: string }
   | { type: 'STATE_UPDATE'; state: CameraState; lenses?: LensInfo[];
       videoNeedsRotation?: boolean; previewZoomLimited?: boolean;
-      streamMode?: StreamMode }
+      streamMode?: StreamMode; minZoom?: number; maxZoom?: number }
   | { type: 'ERROR'; message: string }
   | { type: 'CAPTURE_STATE'; capturing: boolean }                              // RN camera only
   | { type: 'FRAME_DATA'; frameId: number; data: string; timestamp: number }   // RN camera only
