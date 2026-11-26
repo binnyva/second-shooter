@@ -83,7 +83,8 @@ data class CameraUiState(
     val countdown: Int? = null,
 )
 
-const val INITIAL_ZOOM = 2f
+/** The camera opens on the main lens. (The prototype started at 2x to test zoomed streaming.) */
+const val INITIAL_ZOOM = 1f
 
 /**
  * Owns everything that must outlive the activity: the camera use cases, the
