@@ -34,8 +34,9 @@ Source is in `app/src/main/java/com/secondshooter/app/`:
   re-bound to each new lifecycle and keeps its zoom.
 - `session/CameraSessionService.kt`: a foreground service (camera, plus
   microphone once granted) that the camera binds to instead of the screen. The
-  session keeps streaming with the screen off or the app in the background;
-  backing out of the app ends it.
+  session keeps streaming with the screen off; another app in front releases
+  the camera (unless recording) and stops the service until the user comes
+  back (`session/CameraHold.kt`); backing out of the app ends it.
 - Reconnection (`CameraSessionViewModel`): a dropped connection is renegotiated
   with an ICE restart after a 3s grace period, every 5s, up to 12 times, as in
   the RN app. A remote that joins an already-answered session (a reload, a

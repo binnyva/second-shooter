@@ -232,6 +232,17 @@ class CameraStreamer(
     }
 
     /**
+     * Frees the camera for other apps. The use cases, the WebRTC track and
+     * the requested zoom stay, so [bind] picks up where this left off; the
+     * track just gets no frames meanwhile.
+     */
+    suspend fun unbind() {
+        owner = null
+        ProcessCameraProvider.getInstance(context).await().unbindAll()
+        camera = null
+    }
+
+    /**
      * Sets the aspect ratio (width:height, phone upright), re-binding if the
      * camera is already bound. Don't call while recording: re-binding stops it.
      */
@@ -254,6 +265,8 @@ class CameraStreamer(
 
     private suspend fun bindCurrent(owner: LifecycleOwner) {
         val provider = ProcessCameraProvider.getInstance(context).await()
+        // Unbound (or re-bound elsewhere) while waiting: don't take the camera back.
+        if (this.owner !== owner) return
         hasFrontCamera = provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
         if (facing == CameraFacing.FRONT && !hasFrontCamera) facing = CameraFacing.BACK
         val selector = if (facing == CameraFacing.FRONT) {

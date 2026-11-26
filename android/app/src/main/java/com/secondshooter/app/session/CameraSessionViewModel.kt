@@ -4,13 +4,17 @@ import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.os.PowerManager
 import android.view.OrientationEventListener
 import android.util.Log
 import androidx.camera.video.Recording
 import androidx.camera.video.VideoRecordEvent
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import com.secondshooter.app.camera.CameraStreamer
 import com.secondshooter.app.camera.Lens
@@ -124,6 +128,22 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     private val statsTracker = StatsTracker()
     private var firstBind = true
     private var serviceStarted = false
+    private var bindJob: Job? = null
+    /** Orders binds and unbinds, so a quick return can't bind before the release unbinds. */
+    private val bindLock = Mutex()
+    private var visibility = CameraHold.Visibility.IN_FRONT
+
+    /**
+     * The app as a whole coming and going (not one activity: a config
+     * change doesn't count, and the Settings screen is still the app).
+     */
+    private val appLifecycleObserver = LifecycleEventObserver { _, event ->
+        when (event) {
+            Lifecycle.Event.ON_START -> onAppInFront()
+            Lifecycle.Event.ON_STOP -> onAppStopped()
+            else -> Unit
+        }
+    }
     private var sessionJob: Job? = null
     private var reconnectJob: Job? = null
     /** The current connection's offer is in Firestore (so a "waiting" status is a remote's request). */
@@ -157,6 +177,7 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         FirebaseSetup.init(app)
+        ProcessLifecycleOwner.get().lifecycle.addObserver(appLifecycleObserver)
         startStatsLoop()
         orientationListener.enable()
         // Flash lives in settings, so a change from the remote, the screen or
@@ -183,13 +204,13 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
         if (serviceStarted) return
         serviceStarted = true
         CameraSessionService.start(getApplication())
-        viewModelScope.launch {
+        bindJob = viewModelScope.launch {
             val service = CameraSessionService.running.filterNotNull().first()
             try {
                 // Bind straight at the saved ratio, not the default then again.
                 val ratio = settingsRepository.settings.first().aspectRatio
                 camera.setAspectRatio(ratio.width, ratio.height)
-                camera.bind(service)
+                bindLock.withLock { camera.bind(service) }
                 if (firstBind) {
                     firstBind = false
                     camera.setZoom(INITIAL_ZOOM)
@@ -201,6 +222,46 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.update { it.copy(status = "Camera failed: ${e.message}") }
             }
         }
+    }
+
+    private fun onAppInFront() {
+        visibility = CameraHold.Visibility.IN_FRONT
+        // Back from another app: take the camera again. (The screen does the
+        // same on resume; whichever comes first wins.)
+        val granted = ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        if (granted) onCameraPermissionGranted()
+    }
+
+    private fun onAppStopped() {
+        // The screen going off stops the app too, but it's still the app in
+        // front; only a stop with the screen on means another app.
+        val power = getApplication<Application>().getSystemService(PowerManager::class.java)
+        visibility = CameraHold.visibilityWhenStopped(screenInteractive = power.isInteractive)
+        Log.i(TAG, "App stopped: $visibility")
+        updateCameraHold()
+    }
+
+    private val recordingActive: Boolean
+        get() = recording != null || startingRecording || startPendingOnMic
+
+    /** Releases the camera if nothing needs it any more (see [CameraHold]). */
+    private fun updateCameraHold() {
+        if (!serviceStarted || CameraHold.shouldHoldCamera(visibility, recordingActive)) return
+        Log.i(TAG, "Another app is in front; releasing the camera")
+        serviceStarted = false
+        bindJob?.cancel()
+        cancelCountdown()
+        // The session, peer connection and track stay: the remote stays
+        // paired, its picture just stops until the user comes back.
+        viewModelScope.launch {
+            try {
+                bindLock.withLock { camera.unbind() }
+            } catch (e: Exception) {
+                Log.w(TAG, "Unbinding the camera failed", e)
+            }
+        }
+        CameraSessionService.stop(getApplication())
     }
 
     private fun applyAspectRatio() {
@@ -585,6 +646,8 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                 sendState()
             } finally {
                 startingRecording = false
+                // A start that failed behind another app leaves nothing to keep the camera for.
+                if (recording == null) updateCameraHold()
             }
         }
     }
@@ -622,6 +685,8 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 sendState()
                 applyAspectRatio()
+                // Left for another app mid-recording: the camera can go now.
+                updateCameraHold()
             }
             else -> Unit
         }
@@ -694,6 +759,7 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        ProcessLifecycleOwner.get().lifecycle.removeObserver(appLifecycleObserver)
         CameraSessionService.stop(getApplication())
         orientationListener.disable()
         recording?.stop()

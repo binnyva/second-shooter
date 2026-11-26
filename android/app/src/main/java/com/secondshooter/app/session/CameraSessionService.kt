@@ -21,8 +21,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Keeps a camera session alive when the screen turns off or the user leaves
- * the app.
+ * Keeps a camera session alive when the screen turns off. (Another app in
+ * front stops it, unless recording: see [CameraHold].)
  *
  * In the React Native app, a screen-off tore down both the camera and the
  * connection, and most of its reconnection logic (AGENTS.md, "Reconnection")
@@ -33,7 +33,8 @@ import kotlinx.coroutines.flow.asStateFlow
  * no longer touches the session.
  *
  * Started by [CameraSessionViewModel] once the camera permission is granted
- * (the camera FGS type requires it), and stopped when the ViewModel is
+ * (the camera FGS type requires it) and whenever the app comes back to the
+ * front; stopped when another app is in front, and when the ViewModel is
  * cleared, i.e. when the user backs out of the app.
  */
 class CameraSessionService : LifecycleService() {
@@ -125,6 +126,9 @@ class CameraSessionService : LifecycleService() {
         }
 
         fun stop(context: Context) {
+            // Forget it now rather than in onDestroy, so a quick restart
+            // waits for the new instance instead of binding to this one.
+            _running.value = null
             context.stopService(Intent(context, CameraSessionService::class.java))
         }
     }
