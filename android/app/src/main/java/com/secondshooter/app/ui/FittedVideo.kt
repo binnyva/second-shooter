@@ -58,7 +58,10 @@ fun FittedVideo(
                             },
                         )
                         setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-                        setEnableHardwareScaler(true)
+                        // No hardware scaler: it fixes the surface size from the
+                        // first frame while the view is still full screen, and
+                        // once the view shrinks to the frame the picture keeps
+                        // that width, leaving a black strip on the right.
                         track.addSink(this)
                     }
                 },

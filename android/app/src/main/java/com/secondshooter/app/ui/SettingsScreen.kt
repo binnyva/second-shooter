@@ -164,7 +164,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
             )
             ChoiceRow(
                 title = "Photo framing",
-                subtitle = "Masks the viewfinder; the photo itself is always 4:3",
+                subtitle = "Crops photos, videos and the preview to this shape",
                 options = AspectRatioSetting.entries,
                 selected = settings.aspectRatio,
                 label = { it.wire },
