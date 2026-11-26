@@ -16,7 +16,9 @@ import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraInfo
+import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraState
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
@@ -39,6 +41,8 @@ import androidx.camera.video.VideoCapture
 import androidx.camera.video.VideoRecordEvent
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.Observer
 import com.secondshooter.app.protocol.CameraFacing
 import com.secondshooter.app.protocol.FlashMode
 import kotlinx.coroutines.guava.await
@@ -167,6 +171,9 @@ class CameraStreamer(
 
     private var requestedZoom: Float? = null
 
+    // Applies requestedZoom each time the bound camera opens; see bindCurrent.
+    private var openObserver: Pair<LiveData<CameraState>, Observer<CameraState>>? = null
+
     init {
         videoSource.capturerObserver.onCapturerStarted(true)
         textureHelper.startListening { frame ->
@@ -238,6 +245,8 @@ class CameraStreamer(
      */
     suspend fun unbind() {
         owner = null
+        openObserver?.let { (data, observer) -> data.removeObserver(observer) }
+        openObserver = null
         ProcessCameraProvider.getInstance(context).await().unbindAll()
         camera = null
     }
@@ -309,7 +318,20 @@ class CameraStreamer(
         )
         // A fresh binding starts back at 1x, and by the time a new owner
         // binds, the old owner's destruction has already unbound the camera.
-        // So re-apply the zoom we last asked for rather than reading it back.
+        // So re-apply the zoom we last asked for rather than reading it back,
+        // and only once the camera is open: a bind can run inside the
+        // service's onCreate, before its lifecycle starts, and zoom on a
+        // camera that isn't open fails with "Camera is not active".
+        openObserver?.let { (data, observer) -> data.removeObserver(observer) }
+        val observer = Observer<CameraState> { state ->
+            if (state.type == CameraState.Type.OPEN && camera === cam) {
+                requestedZoom?.let { cam.cameraControl.setZoomRatio(it) }
+            }
+        }
+        cam.cameraInfo.cameraState.observe(owner, observer)
+        openObserver = cam.cameraInfo.cameraState to observer
+        // Also try now, in case the camera is already open; if it isn't,
+        // setZoom leaves it to the observer.
         requestedZoom?.let { setZoom(it) }
     }
 
@@ -369,7 +391,13 @@ class CameraStreamer(
         val cam = camera ?: return 1f
         val clamped = level.coerceIn(zoomRange)
         requestedZoom = clamped
-        cam.cameraControl.setZoomRatio(clamped).await()
+        try {
+            cam.cameraControl.setZoomRatio(clamped).await()
+        } catch (e: CameraControl.OperationCanceledException) {
+            // Not open yet, or re-bound meanwhile: the open observer in
+            // bindCurrent applies requestedZoom when it opens.
+            Log.i(TAG, "Zoom ${clamped}x waits for the camera to open")
+        }
         return clamped
     }
 
