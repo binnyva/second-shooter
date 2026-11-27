@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.util.Base64
 import android.util.Log
 import androidx.camera.core.ImageCapture
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileNotFoundException
 import java.io.IOException
 import java.util.Date
 
@@ -109,10 +111,12 @@ class CaptureStore(
                 }
             } ?: SavedCapture(insertIntoCameraRoll(temp, name), inFolder = false)
 
+            val folder = if (saved.inFolder) folderUri.orEmpty() else ""
             dataStore.edit {
                 it[LAST_PHOTO_URI] = saved.uri.toString()
-                it[LAST_PHOTO_FOLDER] = if (saved.inFolder) folderUri.orEmpty() else ""
+                it[LAST_PHOTO_FOLDER] = folder
             }
+            PhotoLibrary.add(context, LibraryPhoto(saved.uri.toString(), name, System.currentTimeMillis(), folder))
             saved
         } finally {
             temp.delete()
@@ -156,6 +160,83 @@ class CaptureStore(
     suspend fun loadThumbnail(uri: Uri, maxEdge: Int = 256): Bitmap? = withContext(Dispatchers.IO) {
         runCatching { decodeScaled(ImageDecoder.createSource(resolver, uri), maxEdge) }.getOrNull()
     }
+
+    /**
+     * A photo for the viewer, at full size up to [maxEdge] on its long side
+     * and halved until it fits beyond that. The cap keeps it drawable:
+     * Android refuses to draw a bitmap over 100 MB. Throws if it can't be read.
+     */
+    suspend fun loadPhoto(uri: Uri, maxEdge: Int): Bitmap = withContext(Dispatchers.IO) {
+        ImageDecoder.decodeBitmap(ImageDecoder.createSource(resolver, uri)) { decoder, info, _ ->
+            val longEdge = maxOf(info.size.width, info.size.height)
+            var sample = 1
+            while (longEdge / sample > maxEdge) sample *= 2
+            decoder.setTargetSampleSize(sample)
+        }
+    }
+
+    // --- The photo viewer's list ------------------------------------------
+
+    /**
+     * The photos the viewer pages through, oldest first. A list that's still
+     * empty (photos saved before it existed) starts with the shutter
+     * thumbnail's photo, so the viewer always opens on the last shot.
+     */
+    suspend fun libraryPhotos(): List<LibraryPhoto> {
+        val photos = PhotoLibrary.all(context)
+        if (photos.isNotEmpty()) return photos
+        val prefs = dataStore.data.first()
+        val uri = prefs[LAST_PHOTO_URI] ?: return photos
+        val name = withContext(Dispatchers.IO) { displayName(Uri.parse(uri)) } ?: Uri.parse(uri).lastPathSegment.orEmpty()
+        val savedAt = CaptureNames.parse(name) ?: 0L
+        PhotoLibrary.add(context, LibraryPhoto(uri, name, savedAt, prefs[LAST_PHOTO_FOLDER].orEmpty()))
+        return PhotoLibrary.all(context)
+    }
+
+    /**
+     * Deletes [photo] and forgets it. A document goes through its provider;
+     * a camera-roll photo through MediaStore, which throws a
+     * SecurityException (a RecoverableSecurityException on Android 10) when
+     * the photo isn't ours any more, e.g. after a reinstall: the caller then
+     * asks the user and calls [forgetPhoto].
+     */
+    suspend fun deletePhoto(photo: LibraryPhoto) {
+        withContext(Dispatchers.IO) {
+            val uri = Uri.parse(photo.uri)
+            try {
+                if (DocumentsContract.isDocumentUri(context, uri)) {
+                    if (!DocumentsContract.deleteDocument(resolver, uri)) throw IOException("The folder refused to delete the photo")
+                } else {
+                    resolver.delete(uri, null, null)
+                }
+            } catch (e: FileNotFoundException) {
+                Log.i(TAG, "Photo to delete was already gone")
+            }
+        }
+        forgetPhoto(photo)
+    }
+
+    /** Drops [photo] from the list; the shutter thumbnail moves to the one before it. */
+    suspend fun forgetPhoto(photo: LibraryPhoto) {
+        PhotoLibrary.remove(context, photo.uri)
+        val previous = PhotoLibrary.all(context).lastOrNull { it.folder == photo.folder }
+        dataStore.edit { prefs ->
+            if (prefs[LAST_PHOTO_URI] != photo.uri) return@edit
+            if (previous != null) {
+                prefs[LAST_PHOTO_URI] = previous.uri
+                prefs[LAST_PHOTO_FOLDER] = previous.folder
+            } else {
+                prefs.remove(LAST_PHOTO_URI)
+                prefs.remove(LAST_PHOTO_FOLDER)
+            }
+        }
+    }
+
+    private fun displayName(uri: Uri): String? = runCatching {
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull()
 
     // --- Videos -----------------------------------------------------------
 
@@ -219,5 +300,15 @@ object CaptureNames {
 
     private fun name(prefix: String, date: Date) =
         // Milliseconds, because a burst can put several shots in the same second.
-        "SecondShooter_${prefix}_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.US).format(date)
+        "SecondShooter_${prefix}_" + format().format(date)
+
+    private val NAME = Regex("""SecondShooter_(?:IMG|VID)_(\d{8}_\d{6}_\d{3})""")
+
+    /** When a capture was taken, from its file name; null for a name we didn't make. */
+    fun parse(name: String): Long? {
+        val stamp = NAME.find(name)?.groupValues?.get(1) ?: return null
+        return runCatching { format().parse(stamp)?.time }.getOrNull()
+    }
+
+    private fun format() = java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.US)
 }

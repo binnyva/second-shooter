@@ -68,7 +68,6 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.secondshooter.app.MainActivity
 import com.secondshooter.app.camera.Lenses
-import com.secondshooter.app.media.GalleryApps
 import com.secondshooter.app.protocol.CameraFacing
 import com.secondshooter.app.protocol.CaptureMode
 import com.secondshooter.app.protocol.LensInfo
@@ -90,7 +89,12 @@ private val LensYellow = Color(0xE6FFCC00)
  * the remote, not here. The QR code is shown on demand.
  */
 @Composable
-fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit, onSwitchToRemote: () -> Unit) {
+fun CameraScreen(
+    viewModel: CameraSessionViewModel,
+    onOpenSettings: () -> Unit,
+    onOpenGallery: () -> Unit,
+    onSwitchToRemote: () -> Unit,
+) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val lastPhoto by viewModel.lastPhoto.collectAsStateWithLifecycle()
@@ -243,7 +247,7 @@ fun CameraScreen(viewModel: CameraSessionViewModel, onOpenSettings: () -> Unit, 
             onCaptureModeChange = viewModel::setCaptureModeFromUi,
             onShutter = viewModel::shutterFromUi,
             onLensSelect = { viewModel.selectLensFromUi(it.id, it.zoom.toFloat()) },
-            onOpenGallery = { GalleryApps.open(context, settings.galleryApp) },
+            onOpenGallery = onOpenGallery,
             onOpenSettings = onOpenSettings,
             onQr = {
                 // No live session (setup failed, or gave up reconnecting):

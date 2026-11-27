@@ -23,12 +23,15 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.secondshooter.app.session.CameraSessionViewModel
 import com.secondshooter.app.ui.CameraScreen
+import com.secondshooter.app.ui.GalleryScreen
+import com.secondshooter.app.ui.GalleryViewModel
 import com.secondshooter.app.ui.SettingsScreen
 import com.secondshooter.app.ui.SettingsViewModel
 
 private object Routes {
     const val CAMERA = "camera"
     const val SETTINGS = "settings"
+    const val GALLERY = "gallery"
     const val REMOTE = "remote"
     const val REMOTE_PATTERN = "remote?sessionId={sessionId}"
 }
@@ -77,6 +80,7 @@ class MainActivity : ComponentActivity() {
                         CameraScreen(
                             session,
                             onOpenSettings = { nav.navigate(Routes.SETTINGS) },
+                            onOpenGallery = { nav.navigate(Routes.GALLERY) },
                             // Replace, not push: leaving camera mode ends the
                             // camera session and frees the camera for the
                             // scanner, as the RN app's router.replace did.
@@ -102,6 +106,10 @@ class MainActivity : ComponentActivity() {
                                 nav.navigate(Routes.CAMERA) { popUpTo(nav.graph.id) { inclusive = true } }
                             },
                         )
+                    }
+                    composable(Routes.GALLERY) {
+                        val gallery: GalleryViewModel = viewModel()
+                        GalleryScreen(gallery, onBack = { nav.popBackStack() })
                     }
                     composable(Routes.SETTINGS) {
                         val settings: SettingsViewModel = viewModel()

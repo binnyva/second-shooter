@@ -214,7 +214,7 @@ fun SettingsScreen(viewModel: SettingsViewModel, onBack: () -> Unit) {
                     .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
                 Text("Gallery app", style = MaterialTheme.typography.bodyLarge)
-                Text("Opened by the thumbnail next to the shutter", style = MaterialTheme.typography.bodySmall)
+                Text("Where \"Open in\" sends a photo from the photo viewer", style = MaterialTheme.typography.bodySmall)
                 Text(viewModel.galleryLabel(settings.galleryApp), style = MaterialTheme.typography.bodyMedium)
             }
 

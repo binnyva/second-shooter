@@ -9,7 +9,7 @@ import com.secondshooter.app.settings.SYSTEM_DEFAULT_GALLERY
 data class GalleryApp(val packageName: String, val label: String)
 
 /**
- * Lists the installed gallery apps and opens one. Moved from
+ * Lists the installed gallery apps and hands a photo to one. Moved from
  * modules/gallery-apps (GalleryAppsModule.kt) without the Expo wrapper.
  *
  * The <queries> block in AndroidManifest.xml must stay in step with
@@ -45,61 +45,37 @@ object GalleryApps {
     }.getOrNull()
 
     /**
-     * Opens [choice] ([SYSTEM_DEFAULT_GALLERY] or a package name). A chosen
-     * app that's gone falls back to the system default, as
-     * MediaService.openGallery did.
+     * Hands one photo to [choice] ([SYSTEM_DEFAULT_GALLERY] or a package
+     * name), with a read grant for it. The system default goes out
+     * implicitly, so Android uses the user's default viewer or asks; a
+     * chosen app that can't view it falls back to that.
      */
-    fun open(context: Context, choice: String): Boolean {
+    fun openPhoto(context: Context, choice: String, photo: Uri): Boolean {
+        val view = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(photo, "image/jpeg")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (context !is android.app.Activity) view.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val pkg = choice.takeUnless { it == SYSTEM_DEFAULT_GALLERY }
-        if (launch(context, pkg)) return true
-        return pkg != null && launch(context, null)
-    }
-
-    private fun launch(context: Context, packageName: String?): Boolean {
-        for (intent in launchCandidates(context, packageName)) {
-            if (context !is android.app.Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val candidates = buildList {
+            if (pkg != null) {
+                context.packageManager.queryIntentActivities(Intent(view).setPackage(pkg), 0).firstOrNull()?.let {
+                    add(Intent(view).setClassName(pkg, it.activityInfo.name))
+                }
+            }
+            add(view)
+        }
+        for (intent in candidates) {
             try {
                 context.startActivity(intent)
                 return true
             } catch (e: Exception) {
-                Log.w(TAG, "Gallery intent refused: $intent", e)
+                Log.w(TAG, "Photo view intent refused: $intent", e)
             }
         }
         return false
     }
 
-    /**
-     * Startable intents, best first. Without a package the system routes the
-     * intent so the user's own default wins (only CATEGORY_DEFAULT matches
-     * count). With a package we pin the component, since OEM galleries are
-     * inconsistent about CATEGORY_DEFAULT.
-     */
-    private fun launchCandidates(context: Context, packageName: String?): List<Intent> {
-        val packageManager = context.packageManager
-        val candidates = mutableListOf<Intent>()
-        for (template in launchIntents()) {
-            if (packageName == null) {
-                if (template.resolveActivity(packageManager) != null) candidates += template
-                continue
-            }
-            val match = packageManager.queryIntentActivities(Intent(template).setPackage(packageName), 0)
-                .firstOrNull() ?: continue
-            candidates += Intent(template).setClassName(packageName, match.activityInfo.name)
-        }
-        // Some OEM galleries only advertise a launcher activity.
-        if (packageName != null) packageManager.getLaunchIntentForPackage(packageName)?.let { candidates += it }
-        return candidates
-    }
-
     private fun queryIntents() = listOf(
-        Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_GALLERY),
-        Intent(Intent.ACTION_VIEW).setType("image/*"),
-    )
-
-    // The media-store URI is what a gallery browser handles; the other two
-    // widen the net for apps that don't declare it.
-    private fun launchIntents() = listOf(
-        Intent(Intent.ACTION_VIEW, Uri.parse("content://media/internal/images/media")),
         Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_GALLERY),
         Intent(Intent.ACTION_VIEW).setType("image/*"),
     )

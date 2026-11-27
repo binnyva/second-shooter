@@ -79,9 +79,18 @@ Captures go to the folder the user picked (a Storage Access Framework tree, the 
 - Two picker behaviours that look like bugs and aren't: `ACTION_OPEN_DOCUMENT_TREE` lists only subfolders, so a folder of photos looks empty; and DocumentsUI takes seconds on a big directory, showing the previous one meanwhile.
 - File names are `SecondShooter_IMG_yyyyMMdd_HHmmss_SSS.jpg` / `_VID_…mp4`, as the RN app made them.
 
+### Photo viewer (`ui/GalleryScreen.kt`, `ui/ZoomableImage.kt`, `media/PhotoLibrary.kt`)
+
+The shutter thumbnail opens the in-app photo viewer on the newest photo: swipe for previous/next, pinch or double-tap (2.5x) to zoom, tap to hide the controls, Delete (with a confirmation), and "Open in" for the gallery app below.
+
+- **It pages through `PhotoLibrary`, the app's own list of the photos it saved** (`filesDir/photo-library.jsonl`, one JSON line per photo, appended by `CaptureStore.savePhoto`, capped at 5000). It's a list of its own because a save folder must never be listed. Photos saved before the list existed aren't in it; an empty list starts with the thumbnail's photo. A photo deleted elsewhere is dropped when the viewer gets `FileNotFoundException` opening it; one it can't read for another reason (its folder's grant was released in Settings) stays and says so.
+- **Photos load at full size up to 4096 px on the long side** (halved beyond that), so zooming shows real detail. The cap matters: Android refuses to draw a bitmap over 100 MB.
+- At fit, one finger isn't handled by the photo, so swipes reach the pager; zoomed in, the pager is disabled and one finger pans.
+- **Delete**: a folder photo through `DocumentsContract.deleteDocument`, a camera-roll photo through MediaStore. MediaStore throws `SecurityException` for a photo this install didn't create (after a reinstall); the viewer then shows the system's delete dialog (`createDeleteRequest`, or `RecoverableSecurityException` on Android 10). The shutter thumbnail moves to the previous photo saved to the same place (`CaptureStore.forgetPhoto`).
+
 ### Gallery App (`media/GalleryApps.kt`)
 
-The thumbnail opens the app in the `galleryApp` setting (`system-default` or a package name).
+The photo viewer's "Open in" hands the photo (`ACTION_VIEW`, with a read grant) to the app in the `galleryApp` setting (`system-default` or a package name). The system default goes out implicitly, so Android uses the user's default viewer or asks.
 
 - **The `<queries>` block in `AndroidManifest.xml` must stay in step with `GalleryApps.queryIntents()`.** Android 11+ hides undeclared packages, and an undeclared query returns an empty list rather than failing. Visibility is per package, so an app matched there is also visible to `getLaunchIntentForPackage`, which filters out editors and share targets without `QUERY_ALL_PACKAGES`.
 - Without a package the intent goes out implicitly, so the user's default wins. With one, the component is pinned, since OEM galleries are inconsistent about `CATEGORY_DEFAULT`. An uninstalled choice falls back to the system default.
@@ -103,7 +112,7 @@ The thumbnail opens the app in the `galleryApp` setting (`system-default` or a p
 - `signaling/` Firestore (`Signaling` camera side, `RemoteSignaling` remote side), `SessionIds`, `FirebaseSetup`
 - `protocol/` data-channel messages (kotlinx.serialization)
 - `session/` ViewModels, the foreground service, photo history
-- `media/` saving, save folder, gallery apps
+- `media/` saving, save folder, the photo viewer's list (`PhotoLibrary`), gallery apps
 - `settings/` DataStore settings
 - `ui/` Compose screens; `CameraControls` is shared by the camera and remote screens, laid out as the RN app's
 
