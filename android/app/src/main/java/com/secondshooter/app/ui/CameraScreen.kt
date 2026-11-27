@@ -558,13 +558,6 @@ private fun QrOverlay(sessionId: String?, onClose: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text("Scan to Connect", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Scan this code to open the app or web remote on another device",
-                color = Color(0xFF888888),
-                fontSize = 14.sp,
-                textAlign = TextAlign.Center,
-            )
             Spacer(Modifier.height(24.dp))
             if (sessionId != null) {
                 QrCode(SessionIds.remoteUrl(sessionId), Modifier.size(250.dp))
@@ -579,13 +572,6 @@ private fun QrOverlay(sessionId: String?, onClose: () -> Unit) {
             } else {
                 Text("Creating session…", color = Color.White, fontSize = 16.sp)
             }
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "If Second Shooter is installed it will open in the app. Otherwise the web remote will load in the browser.",
-                color = Color(0xFF666666),
-                fontSize = 12.sp,
-                textAlign = TextAlign.Center,
-            )
             Spacer(Modifier.height(24.dp))
             Text(
                 "Cancel",

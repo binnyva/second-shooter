@@ -131,13 +131,6 @@ fun QrScanner(onScan: (String) -> Unit, onCancel: () -> Unit) {
             ) {
                 Spacer(Modifier.height(40.dp))
                 Text("Scan QR Code", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Point your camera at the QR code on the camera device",
-                    color = Color(0xFFAAAAAA),
-                    fontSize = 14.sp,
-                    textAlign = TextAlign.Center,
-                )
             }
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                 ScanFrame(Modifier.size(250.dp))
@@ -171,10 +164,6 @@ fun QrScanner(onScan: (String) -> Unit, onCancel: () -> Unit) {
                     }
                     scanned -> {
                         Text("Connecting...", color = Color(0xFF4CD964), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.height(24.dp))
-                    }
-                    else -> {
-                        Text("Position the QR code within the frame", color = Color(0xFF888888), fontSize = 14.sp)
                         Spacer(Modifier.height(24.dp))
                     }
                 }
