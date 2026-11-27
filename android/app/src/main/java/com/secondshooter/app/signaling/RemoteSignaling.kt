@@ -24,15 +24,28 @@ class RemoteSignaling(val sessionId: String) {
 
     /**
      * Takes over a session another remote already answered: marks its offer
-     * as seen and asks the camera for a fresh one. See claimSession in the
-     * web remote, and "Reconnection" in AGENTS.md.
+     * as seen and asks the camera for a fresh one. An offer in a session
+     * that has an answer belongs to an existing connection (an ICE restart
+     * for a remote that dropped, or a stale one), even while the status is
+     * `offer_sent`. See claimSession in the web remote, and "Reconnection"
+     * in AGENTS.md.
+     *
+     * A transaction, so the offer marked as seen is the one in the doc when
+     * `waiting` lands; the camera's ICE-restart writes check the status in a
+     * transaction too ([Signaling.sendIceRestartOffer]).
      */
     suspend fun claim() {
-        val snapshot = sessionRef.get().await()
-        val offerSdp = (snapshot.get("offer") as? Map<*, *>)?.get("sdp") as? String
-        if (snapshot.getString("status") != "connected" || offerSdp == null) return
-        processedOfferSdp = offerSdp
-        sessionRef.set(mapOf("status" to "waiting"), SetOptions.merge()).await()
+        val claimed = sessionRef.firestore.runTransaction { tx ->
+            val snapshot = tx.get(sessionRef)
+            val offerSdp = (snapshot.get("offer") as? Map<*, *>)?.get("sdp") as? String
+            if (offerSdp == null || (snapshot.getString("status") != "connected" && snapshot.get("answer") == null)) {
+                null
+            } else {
+                tx.set(sessionRef, mapOf("status" to "waiting"), SetOptions.merge())
+                offerSdp
+            }
+        }.await()
+        if (claimed != null) processedOfferSdp = claimed
     }
 
     /** Every new offer: the first one, ICE restarts, and new connections. */

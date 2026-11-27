@@ -5,6 +5,7 @@ import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.MetadataChanges
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.tasks.await
 import org.webrtc.IceCandidate
@@ -41,6 +42,26 @@ class Signaling(val sessionId: String) {
         ).await()
     }
 
+    /**
+     * An ICE-restart offer for the current connection, unless a remote has
+     * claimed the session (status `waiting`): overwriting that would hide the
+     * claim, and the new remote would answer an offer for someone else's
+     * connection. A transaction, as the remote's claim is. False if skipped.
+     */
+    suspend fun sendIceRestartOffer(sdp: String): Boolean =
+        sessionRef.firestore.runTransaction { tx ->
+            if (tx.get(sessionRef).getString("status") == "waiting") {
+                false
+            } else {
+                tx.set(
+                    sessionRef,
+                    mapOf("offer" to mapOf("type" to "offer", "sdp" to sdp), "status" to "offer_sent"),
+                    SetOptions.merge(),
+                )
+                true
+            }
+        }.await()
+
     suspend fun addOfferCandidate(candidate: IceCandidate) {
         sessionRef.collection("offerCandidates").add(
             mapOf(
@@ -66,15 +87,18 @@ class Signaling(val sessionId: String) {
 
     /**
      * Session status changes. A remote that finds the session already
-     * `connected` sets it back to `waiting` to ask for a fresh offer (see
+     * answered sets it back to `waiting` to ask for a fresh offer (see
      * claimSession in web-remote/src/lib/signaling.ts).
      */
     fun onStatus(callback: (String) -> Unit) {
         var lastStatus: String? = null
-        listeners += sessionRef.addSnapshotListener { snapshot, _ ->
+        // MetadataChanges.INCLUDE: our own writes echo back first with pending
+        // writes, and only act on what the server has. Without it the
+        // server's confirmation of our own `offer_sent` never arrives (the
+        // data didn't change), lastStatus stays `waiting`, and the next
+        // remote's claim looks like no change and is ignored.
+        listeners += sessionRef.addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, _ ->
             val status = snapshot?.getString("status") ?: return@addSnapshotListener
-            // Our own pending writes echo back first; only act on what the
-            // server has.
             if (snapshot.metadata.hasPendingWrites()) return@addSnapshotListener
             if (status != lastStatus) {
                 lastStatus = status

@@ -324,6 +324,8 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
 
                 connectPeer(sig)
                 _ui.update { it.copy(sessionId = sig.sessionId) }
+            } catch (e: CancellationException) {
+                throw e // a newer startSession replaced this one
             } catch (e: Exception) {
                 Log.e(TAG, "Session setup failed", e)
                 _ui.update { it.copy(status = "Setup failed: ${e.message}", canRestart = true) }
@@ -371,8 +373,11 @@ class CameraSessionViewModel(app: Application) : AndroidViewModel(app) {
             repeat(RECONNECT_MAX_ATTEMPTS) { attempt ->
                 if (rtc !== session || signaling !== sig || _ui.value.connected) return@launch
                 try {
-                    sig.sendOffer(session.createOffer(iceRestart = true))
-                    Log.i(TAG, "Sent ICE-restart offer (attempt ${attempt + 1})")
+                    if (sig.sendIceRestartOffer(session.createOffer(iceRestart = true))) {
+                        Log.i(TAG, "Sent ICE-restart offer (attempt ${attempt + 1})")
+                    } else {
+                        Log.i(TAG, "A remote claimed the session; no ICE-restart offer")
+                    }
                 } catch (e: CancellationException) {
                     throw e // reconnected meanwhile
                 } catch (e: Exception) {

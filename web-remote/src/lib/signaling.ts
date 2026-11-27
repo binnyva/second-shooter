@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   onSnapshot,
+  runTransaction,
   setDoc,
   Timestamp,
   type Firestore,
@@ -57,11 +58,18 @@ export class BrowserSignalingClient {
   /**
    * Takes over a session another remote has already answered.
    *
-   * The camera makes one offer per connection, so the offer sitting in a
-   * `connected` session belongs to someone else's connection (or to this
-   * page before a reload). Answering it can only be rejected. Instead, mark
-   * it as seen and set the status back to `waiting`: the camera answers that
-   * with a fresh offer for a new connection, which onOffer then picks up.
+   * The camera makes one offer per connection, so an offer in a session that
+   * is `connected`, or that any remote has answered before, belongs to an
+   * existing connection: someone else's, this page's before a reload, or an
+   * ICE restart (status `offer_sent`) for a remote that dropped. Answering
+   * it with a new peer connection gets ICE and DTLS up but no data channel,
+   * since SCTP belongs to the old peer. Instead, mark it as seen and set the
+   * status back to `waiting`: the camera answers that with a fresh offer for
+   * a new connection, which onOffer then picks up.
+   *
+   * It's a transaction so the offer marked as seen is the one in the doc
+   * when `waiting` lands; the camera's ICE-restart writes check the status
+   * in a transaction too, so none can follow the claim.
    *
    * Cameras that predate this (the React Native app) ignore the request, and
    * the remote waits as it did before.
@@ -72,14 +80,17 @@ export class BrowserSignalingClient {
     }
 
     const sessionRef = doc(this.db, SESSIONS_COLLECTION, this.sessionId);
-    const snapshot = await getDoc(sessionRef);
-    const data = snapshot.data();
-    if (data?.status !== 'connected' || !data.offer?.sdp) {
-      return;
+    const claimed = await runTransaction(this.db, async (tx) => {
+      const data = (await tx.get(sessionRef)).data();
+      if (!data?.offer?.sdp || (data.status !== 'connected' && !data.answer)) {
+        return null;
+      }
+      tx.set(sessionRef, { status: 'waiting' }, { merge: true });
+      return data.offer.sdp as string;
+    });
+    if (claimed) {
+      this.processedOfferSdp = claimed;
     }
-
-    this.processedOfferSdp = data.offer.sdp;
-    await setDoc(sessionRef, { status: 'waiting' }, { merge: true });
   }
 
   async sendAnswer(answer: SignalingAnswer): Promise<void> {
